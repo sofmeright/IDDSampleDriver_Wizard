@@ -1,11 +1,23 @@
-stages: [build, package]
+stages: 
+  - build
+  - package
 
 variables:
   GIT_STRATEGY: fetch
 
 windows-desktop:
-  stage: package
   image: electronuserland/builder:wine
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  stage: package
+  artifacts:
+    paths:
+      - apps/desktop/dist/*.exe
+    expire_in: 7 days
+  cache:
+    key: "pnpm-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .pnpm-store
   before_script:
     - corepack enable
     - corepack prepare pnpm@9.0.0 --activate
@@ -22,22 +34,16 @@ windows-desktop:
         -c.extraResources='[{"from":"../web/dist","to":"ui"}]' \
         -c.win.target=portable \
         -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${CI_ARCH}.${ext}"
-  artifacts:
-    paths:
-      - apps/desktop/dist/*.exe
-    expire_in: 7 days
-  cache:
-    key: "pnpm-${CI_COMMIT_REF_SLUG}"
-    paths:
-      - .pnpm-store
 
 windows-server:
-  stage: build
   image: golang:1.22
-  script:
-    - cd apps/server
-    - GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/vdisplay-server.exe .
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  stage: build
   artifacts:
     paths:
       - apps/server/dist/vdisplay-server.exe
     expire_in: 7 days
+  script:
+    - cd apps/server
+    - GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/vdisplay-server.exe .
