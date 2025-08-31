@@ -20,7 +20,7 @@
         { "from": "../web/dist", "to": "ui" }
       ],
       "win": {
-        "target": "portable", // single .exe
+        "target": "portable",
         "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}"
       }
     }
