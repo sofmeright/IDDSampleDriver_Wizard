@@ -1,9 +1,16 @@
-stages: 
+stages:
   - build
   - package
 
 variables:
   GIT_STRATEGY: fetch
+  PNPM_PREFER_FROZEN_LOCKFILE: "false"
+  PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+
+cache:
+  key: "pnpm-${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .pnpm-store
 
 windows-desktop:
   image: electronuserland/builder:wine
@@ -14,21 +21,15 @@ windows-desktop:
     paths:
       - apps/desktop/dist/*.exe
     expire_in: 7 days
-  cache:
-    key: "pnpm-${CI_COMMIT_REF_SLUG}"
-    paths:
-      - .pnpm-store
   before_script:
     - corepack enable
     - corepack prepare pnpm@9.0.0 --activate
+    - mkdir -p .pnpm-store
     - pnpm --version
   script:
-    - corepack enable
-    - corepack prepare pnpm@9.0.0 --activate
     - pnpm install --no-frozen-lockfile
     - pnpm --filter @vdisplay/web build
     - cd apps/desktop
-    - pnpm add -D electron-builder
     - pnpm run build
     - npx electron-builder --win portable \
         -c.appId=com.precisionplanit.vdisplay \
