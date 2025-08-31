@@ -23,7 +23,9 @@ windows-desktop:
     - corepack prepare pnpm@9.0.0 --activate
     - pnpm --version
   script:
-    - pnpm install --frozen-lockfile
+    - corepack enable
+    - corepack prepare pnpm@9.0.0 --activate
+    - pnpm install --no-frozen-lockfile
     - pnpm --filter @vdisplay/web build
     - cd apps/desktop
     - pnpm add -D electron-builder
