@@ -1,0 +1,25 @@
+// apps/web/package.json
+{
+    "name": "@vdisplay/web",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+      "dev": "vite",
+      "build": "tsc -b && vite build",
+      "preview": "vite preview --port 5174"
+    },
+    "dependencies": {
+      "react": "^18.2.0",
+      "react-dom": "^18.2.0"
+    },
+    "devDependencies": {
+      "@types/react": "^18.2.15",
+      "@types/react-dom": "^18.2.7",
+      "autoprefixer": "^10.4.19",
+      "postcss": "^8.4.38",
+      "tailwindcss": "^3.4.9",
+      "typescript": "^5.6.2",
+      "vite": "^5.4.1"
+    }
+  }

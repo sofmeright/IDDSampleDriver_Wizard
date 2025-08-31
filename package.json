@@ -1,0 +1,57 @@
+// package.json (root)
+{
+    "name": "vdisplay-wizard-workspace",
+    "private": true,
+    "packageManager": "pnpm@9.0.0",
+    "workspaces": ["apps/*"],
+    "scripts": {
+      "dev": "concurrently -n WEB,DESK,API -c auto \"pnpm --filter @vdisplay/web dev\" \"pnpm --filter @vdisplay/desktop dev\" \"pnpm --filter @vdisplay/server dev\"",
+      "build": "pnpm -r build",
+      "lint": "echo 'lint hooks TBD'"
+    },
+    "devDependencies": {
+      "concurrently": "^9.0.0"
+    }
+  }
+
+
+packagpnpm-workspace.yamles:
+  - "apps/*"
+
+```jsonc
+
+
+---
+
+## scripts
+```
+---
+
+## README (quick start)
+
+````md
+# Virtual Display Wizard (monorepo)
+
+## Prereqs
+- Node 20+ and pnpm
+- Go 1.22+
+- (Dev) Electron will load the Vite dev server at http://localhost:5173
+
+## Dev
+```bash
+pnpm i
+pnpm dev
+````
+
+* WEB: `apps/web` on :5173
+* DESK: Electron attaches to :5173 and provides tray + single-instance lock
+* API: `apps/server` on :5757
+
+## Build
+
+* UI: `pnpm --filter @vdisplay/web build` → `apps/web/dist`
+* Server: `go build ./apps/server`
+* Desktop: point Electron to serve `apps/web/dist` in production and bundle with your preferred packager.
+
+```
+```

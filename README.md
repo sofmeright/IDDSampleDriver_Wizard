@@ -113,3 +113,32 @@ I also have these below, in case you are curious what the others are...
 
 ### Disclaimer: 
 > The Software provided hereunder ("Software") is licensed "as-is," without warranties of any kind, express or implied. The Softwarer makes no representations regarding the functionality, performance, compatibility, security, or availability of the Software and no warranty. The developer should not be held responsible even if it blatantly be the cause of your dog running off and joining a circus, or your mother wins 5 tickets to Hawaii but you get stuck on a gaming bender and pass it up. The developer should not be held responsible if use of the Virual Display Driver causes you to spend longer hours on the PC and you muff up at your workplace. The developer should equally not be accredited with any responsibility for your experience using this software. All thanks is to those in development of the drivers and their forks, and the OpenSource communities! It's never been a better time than now to be a PC user!
+
+---
+
+Ongoing go port!
+
+# Virtual Display Wizard (monorepo)
+
+## Prereqs
+- Node 20+ and pnpm
+- Go 1.22+
+- (Dev) Electron will load the Vite dev server at http://localhost:5173
+
+## Dev
+```bash
+pnpm i
+pnpm dev
+````
+
+* WEB: `apps/web` on :5173
+* DESK: Electron attaches to :5173 and provides tray + single-instance lock
+* API: `apps/server` on :5757
+
+## Build
+
+* UI: `pnpm --filter @vdisplay/web build` → `apps/web/dist`
+* Server: `go build ./apps/server`
+* Desktop: point Electron to serve `apps/web/dist` in production and bundle with your preferred packager.
+
+```
