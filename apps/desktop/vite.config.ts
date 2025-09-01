@@ -7,19 +7,20 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
-    lib: {
-      entry: 'src/main.ts',
-      formats: ['cjs'],
-      fileName: () => 'main', // we'll force the final name below
-    },
     rollupOptions: {
+      input: {
+        main: 'src/main.ts',
+        preload: 'src/preload.ts',
+      },
       external: [
         'electron',
         ...builtinModules,
         ...builtinModules.map(m => `node:${m}`),
       ],
       output: {
-        entryFileNames: 'main.cjs', // <— ensure the file is exactly dist/main.cjs
+        dir: 'dist',
+        format: 'cjs',
+        entryFileNames: (chunk) => `${chunk.name}.cjs`, // main.cjs, preload.cjs
       },
     },
   },
