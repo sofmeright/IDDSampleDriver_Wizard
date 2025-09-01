@@ -43,12 +43,13 @@ package-desktop:
   script:
     - pnpm -C apps/desktop build
     - cd apps/desktop
-    - npx electron-builder --win portable \
-        -c.appId=com.precisionplanit.vdisplay \
-        -c.asar=true \
-        -c.extraResources='[{"from":"../web/dist","to":"ui"}]' \
-        -c.win.target=portable \
-        -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${arch}.exe"
+    - >
+      npx electron-builder --win portable
+      -c.appId=com.precisionplanit.vdisplay
+      -c.asar=true
+      -c.extraResources='[{"from":"../web/dist","to":"ui"}]'
+      -c.win.target=portable
+      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${arch}.exe"
     - ls -la dist || true
   artifacts:
     paths:
