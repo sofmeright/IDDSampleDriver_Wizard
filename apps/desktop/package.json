@@ -7,7 +7,7 @@
     "scripts": {
       "dev": "vite",
       "build": "vite build",
-      "postinstall": "electron-builder install-app-deps --electron-version=31.7.7"
+      "postinstall": "electron-builder install-app-deps"
     },
     "build": {
       "appId": "com.precisionplanit.vdisplay",
