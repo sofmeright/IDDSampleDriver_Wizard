@@ -1,4 +1,4 @@
-stages: [install, build-web, package-desktop]
+stages: [install, build, package-desktop]
 
 variables:
   PNPM_PREFER_FROZEN_LOCKFILE: "false"
