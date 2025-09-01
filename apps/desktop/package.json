@@ -1,25 +1,34 @@
 {
-    "name": "@vdisplay/web",
+    "name": "@vdisplay/desktop",
     "version": "0.1.0",
     "private": true,
     "type": "module",
+    "main": "dist/main.js",
     "scripts": {
       "dev": "vite",
-      "build": "tsc -b && vite build",
-      "preview": "vite preview --port 5174"
+      "build": "vite build"
     },
-    "dependencies": {
-      "react": "^18.2.0",
-      "react-dom": "^18.2.0"
+    "build": {
+      "appId": "com.precisionplanit.vdisplay",
+      "asar": true,
+      "files": [
+        "dist/**"
+      ],
+      "extraResources": [
+        { "from": "../web/dist", "to": "ui" }
+      ],
+      "win": {
+        "target": "portable",
+        "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}"
+      },
+      "electronVersion": "31.7.7"
     },
     "devDependencies": {
-      "@types/react": "^18.2.15",
-      "@types/react-dom": "^18.2.7",
-      "@vitejs/plugin-react": "^4.3.1",
-      "autoprefixer": "^10.4.19",
-      "postcss": "^8.4.38",
-      "tailwindcss": "^3.4.9",
+      "@types/node": "^20.0.0",
+      "electron": "31.7.7",
+      "electron-builder": "^24.13.3",
       "typescript": "^5.6.2",
       "vite": "^5.4.1"
-    }
+    },
+    "dependencies": {}
   }
