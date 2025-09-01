@@ -6,8 +6,7 @@
     "main": "dist/main.js",
     "scripts": {
       "dev": "vite",
-      "build": "vite build",
-      "postinstall": "electron-builder install-app-deps"
+      "build": "vite build"
     },
     "build": {
       "appId": "com.precisionplanit.vdisplay",
