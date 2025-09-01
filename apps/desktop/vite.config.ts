@@ -10,7 +10,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['cjs'],
-      fileName: () => 'main',
+      fileName: () => 'main', // we'll force the final name below
     },
     rollupOptions: {
       external: [
@@ -18,6 +18,9 @@ export default defineConfig({
         ...builtinModules,
         ...builtinModules.map(m => `node:${m}`),
       ],
+      output: {
+        entryFileNames: 'main.cjs', // <— ensure the file is exactly dist/main.cjs
+      },
     },
   },
 })
