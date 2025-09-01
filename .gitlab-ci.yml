@@ -1,52 +1,55 @@
-stages:
-  - build
-  - package
+stages: [install, build-web, package-desktop]
 
 variables:
-  GIT_STRATEGY: fetch
   PNPM_PREFER_FROZEN_LOCKFILE: "false"
   PNPM_STORE_DIR: "$CI_PROJECT_DIR/.pnpm-store"
+  GIT_STRATEGY: fetch
 
 cache:
   key: "pnpm-${CI_COMMIT_REF_SLUG}"
   paths:
     - .pnpm-store
 
-windows-desktop:
+.install_base: &install_base
   image: electronuserland/builder:wine
-  rules:
-    - if: '$CI_COMMIT_TAG'
-  stage: package
-  artifacts:
-    paths:
-      - apps/desktop/dist/*.exe
-    expire_in: 7 days
   before_script:
     - corepack enable
     - corepack prepare pnpm@9.0.0 --activate
     - mkdir -p .pnpm-store
     - pnpm --version
-  script:
     - pnpm install --no-frozen-lockfile
-    - pnpm --filter @vdisplay/web build
+
+install:
+  stage: install
+  <<: *install_base
+  script:
+    - echo "installed dependencies"
+
+build-web:
+  stage: build-web
+  needs: ["install"]
+  <<: *install_base
+  script:
+    - pnpm -C apps/web build
+  artifacts:
+    paths:
+      - apps/web/dist
+    expire_in: 7 days
+
+package-desktop:
+  stage: package-desktop
+  needs: ["build-web"]
+  <<: *install_base
+  script:
+    - pnpm -C apps/desktop build
     - cd apps/desktop
-    - pnpm run build
     - npx electron-builder --win portable \
         -c.appId=com.precisionplanit.vdisplay \
         -c.asar=true \
         -c.extraResources='[{"from":"../web/dist","to":"ui"}]' \
         -c.win.target=portable \
         -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${CI_ARCH}.${ext}"
-
-windows-server:
-  image: golang:1.22
-  rules:
-    - if: '$CI_COMMIT_TAG'
-  stage: build
   artifacts:
     paths:
-      - apps/server/dist/vdisplay-server.exe
+      - apps/desktop/dist/*.exe
     expire_in: 7 days
-  script:
-    - cd apps/server
-    - GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/vdisplay-server.exe .
