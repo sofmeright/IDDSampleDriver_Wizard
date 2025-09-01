@@ -26,9 +26,13 @@ install:
     - echo "installed dependencies"
 
 build-web:
-  stage: build-web
-  needs: ["install"]
-  <<: *install_base
+  image: node:20
+  stage: build
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@9.0.0 --activate
+    - pnpm --version
+    - pnpm install --no-frozen-lockfile
   script:
     - pnpm -C apps/web build
   artifacts:
