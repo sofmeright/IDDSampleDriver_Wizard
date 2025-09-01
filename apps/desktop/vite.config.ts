@@ -1,4 +1,3 @@
-// apps/desktop/vite.config.ts
 import { defineConfig } from 'vite'
 import { builtinModules } from 'node:module'
 

@@ -1,15 +1,17 @@
-// apps/desktop/src/main.ts
-import { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import path from 'node:path'
 
-let tray: Tray | null = null
 let win: BrowserWindow | null = null
+let tray: Tray | null = null
 
-const isDev = process.env.NODE_ENV !== 'production'
+const isDev = process.env.ELECTRON_DEV === '1'
 
 function createWindow(){
-  win = new BrowserWindow({ width: 1120, height: 800, show: false, webPreferences: { preload: path.join(__dirname, 'preload.js') } })
-  const url = isDev ? 'http://localhost:5173' : new URL(path.join(process.resourcesPath, 'ui', 'index.html'), 'file:').toString()
+  win = new BrowserWindow({
+    width: 1120, height: 800, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js') }
+  })
+  const url = isDev ? 'http://localhost:5173' : 'file://' + path.join(process.resourcesPath, 'ui', 'index.html')
   win.loadURL(url)
   win.on('ready-to-show', ()=> win?.show())
 }
@@ -26,10 +28,8 @@ if (!gotLock) {
     tray.setToolTip('Virtual Display Wizard')
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Open', click: ()=> win?.show() },
-      { label: 'Quit', click: ()=> app.quit() }
+      { label: 'Quit', click: ()=> app.quit() },
     ]))
-    globalShortcut.register('CommandOrControl+Shift+V', ()=> win?.show())
   })
+  app.on('window-all-closed', ()=> { /* keep tray app running */ })
 }
-
-app.on('window-all-closed', ()=> { /* keep tray app running */ })

@@ -1,4 +1,4 @@
-stages: [install, build, package-desktop]
+stages: [install, build-web, package-desktop]
 
 variables:
   PNPM_PREFER_FROZEN_LOCKFILE: "false"
@@ -23,16 +23,12 @@ install:
   stage: install
   <<: *install_base
   script:
-    - echo "installed dependencies"
+    - echo "dependencies installed"
 
 build-web:
-  image: node:20
-  stage: build
-  before_script:
-    - corepack enable
-    - corepack prepare pnpm@9.0.0 --activate
-    - pnpm --version
-    - pnpm install --no-frozen-lockfile
+  stage: build-web
+  needs: ["install"]
+  <<: *install_base
   script:
     - pnpm -C apps/web build
   artifacts:
@@ -47,12 +43,7 @@ package-desktop:
   script:
     - pnpm -C apps/desktop build
     - cd apps/desktop
-    - npx electron-builder --win portable \
-        -c.appId=com.precisionplanit.vdisplay \
-        -c.asar=true \
-        -c.extraResources='[{"from":"../web/dist","to":"ui"}]' \
-        -c.win.target=portable \
-        -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${CI_ARCH}.${ext}"
+    - npx electron-builder --win portable         -c.appId=com.precisionplanit.vdisplay         -c.asar=true         -c.extraResources='[{"from":"../web/dist","to":"ui"}]'         -c.win.target=portable         -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${CI_ARCH}.${ext}"
   artifacts:
     paths:
       - apps/desktop/dist/*.exe

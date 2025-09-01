@@ -1,14 +1,10 @@
 {
-    "name": "vdisplay-wizard-workspace",
-    "private": true,
-    "packageManager": "pnpm@9.0.0",
-    "workspaces": ["apps/*"],
-    "scripts": {
-      "dev": "concurrently -n WEB,DESK,API -c auto \"pnpm --filter @vdisplay/web dev\" \"pnpm --filter @vdisplay/desktop dev\" \"pnpm --filter @vdisplay/server dev\"",
-      "build": "pnpm -r build",
-      "lint": "echo 'lint hooks TBD'"
-    },
-    "devDependencies": {
-      "concurrently": "^9.0.0"
-    }
+  "name": "vdisplay-wizard-workspace",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "install:ci": "pnpm install --no-frozen-lockfile",
+    "build:web": "pnpm -C apps/web build",
+    "build:desktop": "pnpm -C apps/desktop build"
   }
+}
