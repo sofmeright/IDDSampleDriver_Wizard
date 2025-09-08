@@ -17,10 +17,15 @@
     "files": ["bin/**", "dist/**", "package.json"],
     "extraResources": [
       { "from": "../web/dist", "to": "ui" },
-      { "from": "bin", "to": "bin" }
+      { "from": "bin", "to": "bin" },
+      { "from": "assets/icons", "to": "icons" }
     ],
     "directories": { "output": "release" },
-    "win": { "target": "portable", "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}" },
+    "win": {
+      "target": "portable",
+      "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}",
+      "icon": "assets/icons/app.ico"
+    },
     "electronVersion": "31.7.7"
   },
 
@@ -30,5 +35,4 @@
     "typescript": "^5.6.2",
     "vite": "^5.4.1"
   }
-  
 }
