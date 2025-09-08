@@ -395,6 +395,11 @@ ipcMain.handle('vdisplay:backups:delete', async (_e, name: string) => { await de
 ipcMain.handle('vdisplay:driver:install', async () => { try { await driverInstall(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
 ipcMain.handle('vdisplay:driver:uninstall', async () => { try { await driverUninstall(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
 ipcMain.handle('vdisplay:driver:reload', async () => { try { await driverReload(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
+ipcMain.handle('vdisplay:driver:state', async () => {
+  const inf = await getInfName();
+  const state: 'not-detected'|'running'|'stopped' = inf ? 'running' : 'not-detected';
+  return { state };
+});
 ipcMain.handle('vdisplay:driver:ensurePkg', async () => await ensureDriverPackage());
 ipcMain.handle('vdisplay:admin:check', async () => await isAdmin());
 ipcMain.handle('vdisplay:admin:relaunch', async () => { await relaunchAsAdmin(); return true; });

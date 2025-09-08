@@ -196,12 +196,25 @@ export default function App(){
 
   const relaunchAdmin = () => api?.relaunchAsAdmin();
 
+  const refreshDriverState = async () => {
+    if (!api) return;
+    const r = await api.driverState();
+    if (r?.state) setSt(s => ({ ...s, driverState: r.state as DriverState }));
+  };
+
   const doInstall = async () => {
     const r = await api?.driverInstall();
     if (r && r.error === 'ELEVATION_REQUIRED') setIsAdmin(false);
+    await refreshDriverState();
   };
-  const doUninstall = async () => { await api?.driverUninstall(); };
-  const doReload = async () => { await api?.driverReload(); };
+  const doUninstall = async () => {
+    await api?.driverUninstall();
+    await refreshDriverState();
+  };
+  const doReload = async () => {
+    await api?.driverReload();
+    await refreshDriverState();
+  };
 
   const saveBackupIPC = async (name:string) => { await api?.saveBackup(name, { gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active, retired: st.retired }); };
   const loadBackupIPC = async (name:string) => {
