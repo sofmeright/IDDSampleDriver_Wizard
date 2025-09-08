@@ -62,6 +62,15 @@ function cmd(command: string) {
   });
 }
 
+function runExe(file: string, args: string[]) {
+  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+    execFile(file, args, { windowsHide: true }, (error, stdout, stderr) => {
+      const code = (error as any)?.code ?? 0;
+      resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+}
+
 async function isAdmin(): Promise<boolean> {
   const { stdout } = await ps('([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)');
   return /True/i.test(stdout.trim());
@@ -275,16 +284,23 @@ async function driverInstall(): Promise<void> {
 
   const nef = nefconwPath();
   if (nef) {
-    const create = `"${nef}" --create-device-node --hardware-id ${HARDWARE_ID} --class-name Display --class-guid ${CLASS_GUID}`;
-    const r = await cmd(create);
+    const r = await runExe(nef, [
+      '--create-device-node',
+      '--hardware-id', HARDWARE_ID,
+      '--class-name', 'Display',
+      '--class-guid', CLASS_GUID
+    ]);
     log(`nefconw create-device-node: ${r.code}`);
-    if (r.stderr) log(r.stderr.trim());
+    if (r.stdout.trim()) log(r.stdout.trim());
+    if (r.stderr.trim()) log(r.stderr.trim());
   } else {
     log('nefconw.exe not found; skipping device-node creation');
   }
-  const add = await cmd(`pnputil /add-driver "${DRIVER_INF}" /install`);
+
+  const add = await runExe('pnputil', ['/add-driver', DRIVER_INF, '/install']);
   log(`pnputil add-driver: ${add.code}`);
-  if (add.stderr) log(add.stderr.trim());
+  if (add.stdout.trim()) log(add.stdout.trim());
+  if (add.stderr.trim()) log(add.stderr.trim());
 }
 
 async function driverUninstall(): Promise<void> {
@@ -292,21 +308,24 @@ async function driverUninstall(): Promise<void> {
   if (!(await isAdmin())) { log('Admin required for uninstall'); throw new Error('ELEVATION_REQUIRED'); }
   const inf = await getInfName();
   if (inf) {
-    const del = await cmd(`pnputil /delete-driver ${inf} /uninstall /force`);
+    const del = await runExe('pnputil', ['/delete-driver', inf, '/uninstall', '/force']);
     log(`pnputil delete-driver: ${del.code}`);
-    if (del.stderr) log(del.stderr.trim());
+    if (del.stdout.trim()) log(del.stdout.trim());
+    if (del.stderr.trim()) log(del.stderr.trim());
   }
-  const rem = await cmd(`pnputil /remove-device /deviceid ${HARDWARE_ID}`);
+  const rem = await runExe('pnputil', ['/remove-device', '/deviceid', HARDWARE_ID]);
   log(`pnputil remove-device: ${rem.code}`);
-  if (rem.stderr) log(rem.stderr.trim());
+  if (rem.stdout.trim()) log(rem.stdout.trim());
+  if (rem.stderr.trim()) log(rem.stderr.trim());
 }
 
 async function driverReload(): Promise<void> {
   log('Driver reload requested');
   if (!(await isAdmin())) { log('Admin required for reload'); throw new Error('ELEVATION_REQUIRED'); }
-  const r = await cmd(`pnputil /restart-device /deviceid ${HARDWARE_ID}`);
+  const r = await runExe('pnputil', ['/restart-device', '/deviceid', HARDWARE_ID]);
   log(`pnputil restart-device: ${r.code}`);
-  if (r.stderr) log(r.stderr.trim());
+  if (r.stdout.trim()) log(r.stdout.trim());
+  if (r.stderr.trim()) log(r.stderr.trim());
 }
 
 // --- CLI (Sunshine integration) ---
