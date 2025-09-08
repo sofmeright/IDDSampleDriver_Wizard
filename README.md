@@ -1,4 +1,4 @@
-# Virtual Display Wizard — Clean Starter
+# ![VirtualDisplayWizard](https://gitlab.prplanit.com/uploads/-/system/project/avatar/42/app.png?width=24) VirtualDisplayWizard
 
 ## Prereqs
 - Node 20+ with Corepack (pnpm)
