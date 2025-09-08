@@ -42,14 +42,10 @@ package-desktop:
   <<: *install_base
   script:
     - pnpm --dir apps/desktop run build
+    - ls -la apps/web/dist || true
+    - test -f apps/web/dist/index.html || (echo "apps/web/dist missing index.html" && exit 1)
     - cd apps/desktop
-    - >
-      npx electron-builder --win portable
-      -c.appId=com.precisionplanit.vdisplay
-      -c.asar=true
-      -c.extraResources='[{"from":"../web/dist","to":"ui"}]'
-      -c.win.target=portable
-      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${arch}.exe"
+    - DEBUG=electron-builder npx electron-builder --win portable
     - ls -la release || true
   artifacts:
     paths:
