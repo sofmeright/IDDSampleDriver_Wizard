@@ -49,7 +49,7 @@ package-desktop:
       -c.asar=true
       -c.extraResources='[{"from":"../web/dist","to":"ui"}]'
       -c.win.target=portable
-      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${arch}.exe"
+      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-\${arch}.exe"
     - ls -la dist || true
   artifacts:
     paths:
