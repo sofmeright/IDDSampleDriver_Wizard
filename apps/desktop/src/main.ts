@@ -306,7 +306,7 @@ async function deleteBackup(name: string) {
   log(`Deleted backup "${name}"`);
 }
 
-// --- driver package bootstrap (NEW flow for C:\\VirtualDisplayDriver) ---
+// --- driver package bootstrap (NEW flow for C:\VirtualDisplayDriver) ---
 async function ensureDriverHome(): Promise<boolean> {
   try {
     if (exists(DRIVER_INF)) {
@@ -379,13 +379,13 @@ async function getVddInstanceIds(): Promise<string[]> {
   const script = `
     $ids = @()
 
-    # Primary: match by PNPDeviceID (works everywhere)
+    # Primary: match by PNPDeviceID (works on all builds)
     try {
       $ids = Get-CimInstance Win32_PnPEntity -Filter "PNPDeviceID LIKE 'ROOT\\\\MTTVDD%'" -ErrorAction Stop |
         Select-Object -ExpandProperty PNPDeviceID
     } catch { }
 
-    # Fallback: look in Display class for a friendly name containing "Virtual Display"
+    # Fallback: try Display class; look for "Virtual Display" in FriendlyName
     if (-not $ids -or $ids.Count -eq 0) {
       try {
         $ids = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
@@ -411,33 +411,28 @@ async function getVddInstanceIds(): Promise<string[]> {
   }
 }
 
-// Real run-state based on device presence & Status (running/disabled)
+// Real run-state based on PnP presence + ConfigManagerErrorCode (22 = disabled)
 async function getVddRunState(): Promise<'not-detected'|'stopped'|'running'> {
   const script = `
-    # Find any ROOT\\MTTVDD* device by PNPDeviceID
-    $ids = @()
     try {
-      $ids = Get-CimInstance Win32_PnPEntity -Filter "PNPDeviceID LIKE 'ROOT\\\\MTTVDD%'" -ErrorAction Stop |
-        Select-Object -ExpandProperty PNPDeviceID
-    } catch { }
+      $devs = Get-CimInstance Win32_PnPEntity -Filter "PNPDeviceID LIKE 'ROOT\\\\MTTVDD%'" -ErrorAction Stop |
+        Select-Object PNPDeviceID, ConfigManagerErrorCode
+    } catch {
+      $devs = @()
+    }
 
-    if (-not $ids -or $ids.Count -eq 0) {
+    if (-not $devs -or $devs.Count -eq 0) {
       'not-detected'
       return
     }
 
-    $first = $ids | Select-Object -First 1
-
-    # Query status with Get-PnpDevice by InstanceId (supported widely)
-    try {
-      $dev = Get-PnpDevice -InstanceId $first -ErrorAction SilentlyContinue
-      if (-not $dev) { 'not-detected' }
-      elseif ($dev.Status -match 'Disabled') { 'stopped' }
-      else { 'running' }
-    } catch {
-      # If Get-PnpDevice failed entirely, assume present => running
-      'running'
+    # If ANY device is enabled (error code not 22), report running; else stopped
+    $anyEnabled = $false
+    foreach ($d in $devs) {
+      if ($d.ConfigManagerErrorCode -ne 22) { $anyEnabled = $true; break }
     }
+
+    if ($anyEnabled) { 'running' } else { 'stopped' }
   `;
   const { stdout, stderr, code } = await ps(script);
   if (stderr.trim()) log(`getVddRunState stderr: ${stderr.trim()}`);
@@ -518,7 +513,7 @@ async function driverUninstall(): Promise<void> {
   }
 
   await getVddRunState();
-  // We intentionally leave C:\\VirtualDisplayDriver & registry to preserve settings.
+  // We intentionally leave C:\VirtualDisplayDriver & registry to preserve settings.
 }
 
 async function driverReload(): Promise<void> {
