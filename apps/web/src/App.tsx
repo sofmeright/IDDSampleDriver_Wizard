@@ -1,7 +1,10 @@
 // apps/web/src/App.tsx
 import React, { useEffect, useState } from "react";
+import brandUrl from "./assets/brand.png"; // <— your logo
 
 declare global { interface Window { vdisplay?: any } }
+// (If your TS setup lacks image module types, uncomment below)
+// declare module "*.png" { const src: string; export default src; }
 
 const brandBg = "#310937";
 const brandFg = "#00f19d";
@@ -270,7 +273,31 @@ export default function App(){
       <div className="max-w-6xl mx-auto px-6 py-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div style={{width:40,height:40,borderRadius:8,background:"#1a1f2b"}} />
+            {/* Replaced placeholder with bundled image */}
+            <img
+              src={brandUrl}
+              alt="Virtual Display Wizard"
+              width={40}
+              height={40}
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: 8,
+                objectFit: "cover",
+                boxShadow: "0 0 0 1px rgba(255,255,255,0.08)"
+              }}
+              onError={(e) => {
+                // graceful fallback to colored square if image missing
+                const el = e.currentTarget;
+                el.style.display = "none";
+                const fallback = document.createElement("div");
+                fallback.style.width = "40px";
+                fallback.style.height = "40px";
+                fallback.style.borderRadius = "8px";
+                fallback.style.background = "#1a1f2b";
+                el.parentElement?.insertBefore(fallback, el);
+              }}
+            />
             <h1 className="text-2xl font-semibold" style={{ color: brandFg }}>Virtual Display Wizard</h1>
           </div>
           <div className="relative">
@@ -431,7 +458,11 @@ function NumberSpinner(p:{ value:number, min?:number, max?:number, onChange:(v:n
   )
 }
 
-function ResTable(p:{ title:string, rows: Row[], onChange:(r:Row[])=>void, onMove:(ids:string[])=>void, side:'left'|'right', mode:'disabled'|'active' }){
+type ResTableProps = {
+  title:string, rows: Row[], onChange:(r:Row[])=>void, onMove:(ids:string[])=>void, side:'left'|'right', mode:'disabled'|'active'
+};
+
+function ResTable(p: ResTableProps){
   const [selected, setSelected] = useState<string[]>([]);
   const toggleSel = (id:string)=> setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id]);
   const addBlank = ()=>{ const n: Row = { id: uid(), w: 0, h: 0, hz: 0 }; p.onChange([...p.rows, n]); };
