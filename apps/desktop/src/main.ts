@@ -1,3 +1,4 @@
+// apps/desktop/src/main.ts
 import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -373,19 +374,27 @@ async function findPublishedInf(): Promise<{ published?: string }> {
   return {};
 }
 
-// Prefer HardwareID match; fall back to friendly-name contains 'Virtual Display'
+// Prefer PNPDeviceID match via CIM; fallback to Display class friendly name
 async function getVddInstanceIds(): Promise<string[]> {
   const script = `
-    $dev = Get-PnpDevice -HardwareID 'Root\\MttVDD' -ErrorAction SilentlyContinue |
-      Select-Object InstanceId
+    $ids = @()
 
-    if (-not $dev) {
-      $dev = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
-        Where-Object { $_.FriendlyName -match 'Virtual\\s*Display' } |
-        Select-Object InstanceId
+    # Primary: match by PNPDeviceID (works everywhere)
+    try {
+      $ids = Get-CimInstance Win32_PnPEntity -Filter "PNPDeviceID LIKE 'ROOT\\\\MTTVDD%'" -ErrorAction Stop |
+        Select-Object -ExpandProperty PNPDeviceID
+    } catch { }
+
+    # Fallback: look in Display class for a friendly name containing "Virtual Display"
+    if (-not $ids -or $ids.Count -eq 0) {
+      try {
+        $ids = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+          Where-Object { $_.FriendlyName -match 'Virtual\\s*Display' } |
+          Select-Object -ExpandProperty InstanceId
+      } catch { }
     }
 
-    $dev | ConvertTo-Json -Compress
+    $ids | Select-Object -Unique | ConvertTo-Json -Compress
   `;
   const { stdout, stderr, code } = await ps(script);
   if (stderr.trim()) log(`getVddInstanceIds stderr: ${stderr.trim()}`);
@@ -393,11 +402,11 @@ async function getVddInstanceIds(): Promise<string[]> {
   try {
     const parsed = JSON.parse(stdout || '[]');
     const arr = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
-    const ids = arr.map((x: any) => String(x.InstanceId)).filter(Boolean);
+    const ids = arr.map((x: any) => String(x)).filter(Boolean);
     log(`VDD Instance IDs: ${ids.join(', ') || '(none)'}`);
     return ids;
-  } catch (e:any) {
-    log(`getVddInstanceIds parse error: ${e.message||e}`);
+  } catch (e: any) {
+    log(`getVddInstanceIds parse error: ${e.message || e}`);
     return [];
   }
 }
@@ -405,17 +414,36 @@ async function getVddInstanceIds(): Promise<string[]> {
 // Real run-state based on device presence & Status (running/disabled)
 async function getVddRunState(): Promise<'not-detected'|'stopped'|'running'> {
   const script = `
-    $dev = Get-PnpDevice -HardwareID 'Root\\MttVDD' -ErrorAction SilentlyContinue |
-      Select-Object Status
-    if (-not $dev) { 'not-detected' }
-    elseif ($dev | Where-Object { $_.Status -match 'Disabled' }) { 'stopped' }
-    else { 'running' }
+    # Find any ROOT\\MTTVDD* device by PNPDeviceID
+    $ids = @()
+    try {
+      $ids = Get-CimInstance Win32_PnPEntity -Filter "PNPDeviceID LIKE 'ROOT\\\\MTTVDD%'" -ErrorAction Stop |
+        Select-Object -ExpandProperty PNPDeviceID
+    } catch { }
+
+    if (-not $ids -or $ids.Count -eq 0) {
+      'not-detected'
+      return
+    }
+
+    $first = $ids | Select-Object -First 1
+
+    # Query status with Get-PnpDevice by InstanceId (supported widely)
+    try {
+      $dev = Get-PnpDevice -InstanceId $first -ErrorAction SilentlyContinue
+      if (-not $dev) { 'not-detected' }
+      elseif ($dev.Status -match 'Disabled') { 'stopped' }
+      else { 'running' }
+    } catch {
+      # If Get-PnpDevice failed entirely, assume present => running
+      'running'
+    }
   `;
   const { stdout, stderr, code } = await ps(script);
   if (stderr.trim()) log(`getVddRunState stderr: ${stderr.trim()}`);
   if (code !== 0) log(`getVddRunState exit code: ${code}`);
-  const v = (stdout || '').trim().replace(/["'\r\n]+/g,'');
-  const state = (v === 'stopped' || v === 'running') ? v as any : 'not-detected';
+  const v = (stdout || '').trim().replace(/["'\r\n]+/g, '');
+  const state = (v === 'stopped' || v === 'running') ? (v as any) : 'not-detected';
   log(`getVddRunState -> ${state}`);
   return state;
 }
