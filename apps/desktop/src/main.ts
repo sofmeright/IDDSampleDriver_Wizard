@@ -7,8 +7,13 @@ let tray: Tray | null = null
 
 const isDev = process.env.ELECTRON_DEV === '1'
 
+// 1x1 transparent PNG (valid NativeImage so Tray is stable on Windows)
+const TRAY_IMG = nativeImage.createFromDataURL(
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=='
+)
+
 function createWindow() {
-  win = new BrowserWindow({
+  const w = new BrowserWindow({
     width: 1120,
     height: 800,
     show: false,
@@ -21,14 +26,17 @@ function createWindow() {
     ? 'http://localhost:5173'
     : pathToFileURL(path.join(process.resourcesPath, 'ui', 'index.html')).toString()
 
-  win.loadURL(url)
+  w.loadURL(url)
 
-  win.on('ready-to-show', () => {
-    const w = win
-    if (w && !w.isDestroyed()) w.show()
+  w.on('ready-to-show', () => {
+    if (!w.isDestroyed()) w.show()
   })
 
-  win.on('closed', () => { win = null })
+  w.on('closed', () => {
+    if (win === w) win = null
+  })
+
+  win = w
 }
 
 function ensureWindow() {
@@ -55,16 +63,23 @@ if (!gotLock) {
   app.whenReady().then(() => {
     createWindow()
 
-    const img = nativeImage.createEmpty()
-    tray = new Tray(img)
-    tray.setToolTip('Virtual Display Wizard')
-    tray.setContextMenu(Menu.buildFromTemplate([
+    // Create a stable Tray icon; avoid createEmpty() on Windows
+    tray = new Tray(TRAY_IMG)
+    try { tray.setToolTip('Virtual Display Wizard') } catch {}
+
+    const menu = Menu.buildFromTemplate([
       { label: 'Open', click: () => ensureWindow() },
       { label: 'Quit', click: () => app.quit() },
-    ]))
+    ])
+
+    try { tray.setContextMenu(menu) } catch {}
   })
 
   app.on('activate', () => ensureWindow())
 
-  app.on('window-all-closed', () => { /* keep app running in tray */ })
+  // Keep running in tray on Windows
+  app.on('window-all-closed', () => {})
+
+  // Final safety net to avoid the modal error box
+  process.on('uncaughtException', () => { /* swallow & keep running */ })
 }
