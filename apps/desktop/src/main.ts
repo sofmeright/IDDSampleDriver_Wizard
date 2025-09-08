@@ -22,18 +22,28 @@ function createWindow() {
     : pathToFileURL(path.join(process.resourcesPath, 'ui', 'index.html')).toString()
 
   win.loadURL(url)
-  win.on('ready-to-show', () => win?.show())
+
+  win.on('ready-to-show', () => {
+    const w = win
+    if (w && !w.isDestroyed()) w.show()
+  })
+
   win.on('closed', () => { win = null })
 }
 
 function ensureWindow() {
-  if (!win || win.isDestroyed()) {
+  const w = win
+  if (!w || w.isDestroyed()) {
     createWindow()
     return
   }
-  if (win.isMinimized()) win.restore()
-  win.show()
-  win.focus()
+  try {
+    if (w.isMinimized()) w.restore()
+    if (!w.isVisible()) w.show()
+    w.focus()
+  } catch {
+    createWindow()
+  }
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -56,6 +66,5 @@ if (!gotLock) {
 
   app.on('activate', () => ensureWindow())
 
-  // keep app alive in tray; do not quit on Windows when all windows closed
-  app.on('window-all-closed', () => {})
+  app.on('window-all-closed', () => { /* keep app running in tray */ })
 }
