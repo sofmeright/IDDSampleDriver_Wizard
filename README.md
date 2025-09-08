@@ -1,6 +1,6 @@
 Kai of <a href="https://precisionplanit.com">PrecisionPlanIT.com</a> presents:
 
-# ![Virtual_Display_Wizard](https://gitlab.prplanit.com/uploads/-/system/project/avatar/42/app.png?width=26) Virtual Display Wizard
+# ![Virtual_Display_Wizard](https://gitlab.prplanit.com/uploads/-/system/project/avatar/42/app.png?width=30) Virtual Display Wizard
 > A GUI tool that can integrate with other software such as Sunshine for efficient manipulation (Install / Uninstall / Reload / Configure) of Indirect Display Driver Sample (IddSample) implementations like the HDR capable <a href="https://github.com/itsmikethetech/Virtual-Display-Driver">Virtual Display Driver from itsmikethetech</a> that works on Windows 10/11. This installer/configuration tool is intended to provide a more elegant solution in place of needing to edit configs or use Device Manger for driver installation.
 
 
