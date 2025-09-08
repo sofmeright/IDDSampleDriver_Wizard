@@ -26,6 +26,17 @@ const api = {
   relaunchAsAdmin: () => ipcRenderer.invoke('vdisplay:admin:relaunch'),
 };
 
-contextBridge.exposeInMainWorld('vdisplay', api);
+contextBridge.exposeInMainWorld("vdisplay", {
+    init: () => ipcRenderer.invoke("vdisplay:init"),
+    onLog: (cb: (line: string) => void) => ipcRenderer.on("vdisplay:log", (_e, line) => cb(line)),
+    saveConfig: (cfg:any) => ipcRenderer.invoke("vdisplay:saveConfig", cfg),
+    driverInstall: () => ipcRenderer.invoke("vdisplay:driverInstall"),
+    driverUninstall: () => ipcRenderer.invoke("vdisplay:driverUninstall"),
+    driverReload: () => ipcRenderer.invoke("vdisplay:driverReload"),
+    relaunchAsAdmin: () => ipcRenderer.invoke("vdisplay:relaunchAsAdmin"),
+    saveBackup: (name:string, cfg:any) => ipcRenderer.invoke("vdisplay:backup:save", name, cfg),
+    loadBackup: (name:string) => ipcRenderer.invoke("vdisplay:backup:load", name),
+    deleteBackup: (name:string) => ipcRenderer.invoke("vdisplay:backup:delete", name)
+  });
 
 export type RendererApi = typeof api;
