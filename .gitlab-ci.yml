@@ -30,7 +30,7 @@ build-web:
   needs: ["install"]
   <<: *install_base
   script:
-    - pnpm -C apps/web build
+    - pnpm --dir apps/web run build
   artifacts:
     paths:
       - apps/web/dist
@@ -41,16 +41,16 @@ package-desktop:
   needs: ["build-web"]
   <<: *install_base
   script:
-    - pnpm -C apps/desktop build
+    - pnpm --dir apps/desktop run build
     - cd apps/desktop
     - >
-      npx electron-builder --win portable \
-      -c.appId=com.precisionplanit.vdisplay \
-      -c.asar=true \
-      -c.extraResources='[{"from":"../web/dist","to":"ui"}]' \
-      -c.win.target=portable \
-      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-\${arch}.exe"
-    - ls -la dist || true
+      npx electron-builder --win portable
+      -c.appId=com.precisionplanit.vdisplay
+      -c.asar=true
+      -c.extraResources='[{"from":"../web/dist","to":"ui"}]'
+      -c.win.target=portable
+      -c.win.artifactName="VDisplay-Wizard-${CI_COMMIT_SHORT_SHA}-win-${arch}.exe"
+    - ls -la release || true
   artifacts:
     paths:
       - apps/desktop/release/*.exe

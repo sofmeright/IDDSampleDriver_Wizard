@@ -17,9 +17,9 @@ function createWindow() {
   if (isDev) {
     w.loadURL('http://localhost:5173')
   } else {
-    const htmlPath = path.join(process.resourcesPath, 'ui', 'index.html') // <-- extraResources location
+    const htmlPath = path.join(process.resourcesPath, 'ui', 'index.html')
     if (!fs.existsSync(htmlPath)) {
-      dialog.showErrorBox('UI not found', `Expected ${htmlPath}`)
+      dialog.showErrorBox('UI not found', `Expected ${htmlPath}\nMake sure apps/web/dist exists in the package step.`)
     } else {
       w.loadFile(htmlPath)
     }
@@ -30,8 +30,6 @@ function createWindow() {
   win = w
 }
 
-// Add this so the window is actually created
 app.whenReady().then(createWindow)
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
-// Optional: quit on Windows when all windows closed
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
