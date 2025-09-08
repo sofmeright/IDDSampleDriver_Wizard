@@ -15,7 +15,10 @@
     "appId": "com.precisionplanit.vdisplay",
     "asar": true,
     "files": ["dist/**", "package.json"],
-    "extraResources": [{ "from": "../web/dist", "to": "ui" }],
+    "extraResources": [
+      { "from": "../web/dist", "to": "ui" },
+      { "from": "bin", "to": "bin" }
+    ],
     "directories": { "output": "release" },
     "win": {
       "target": "portable",

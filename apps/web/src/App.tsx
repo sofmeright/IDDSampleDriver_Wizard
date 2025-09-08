@@ -1,5 +1,5 @@
 // apps/web/src/App.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const brandBg = "#310937";
 const brandFg = "#00f19d";
@@ -20,187 +20,143 @@ type AppState = {
   driverState: DriverState;
 };
 
-const k = (...p: string[]) => ["vddw2", ...p].join(":");
+declare global {
+  interface Window {
+    vdisplay: {
+      version: string
+      isAdmin(): Promise<boolean>
+      relaunchAsAdmin(): Promise<void>
+      listGpus(): Promise<string[]>
+      loadConfig(): Promise<{gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]}>
+      saveConfig(payload: {gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]}): Promise<boolean>
+      listBackups(): Promise<string[]>
+      saveBackup(name:string, payload:any): Promise<boolean>
+      loadBackup(name:string): Promise<{gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]}>
+      deleteBackup(name:string): Promise<boolean>
+      driverInstall(): Promise<boolean>
+      driverUninstall(): Promise<boolean>
+      driverReload(): Promise<boolean>
+      onLog(cb:(line:string)=>void): ()=>void
+    }
+  }
+}
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 const isNum = (n: any) => typeof n === "number" && Number.isFinite(n);
 
-function normalize(s: AppState): AppState {
-  const fix = (r: Row): Row => ({ id: r.id || uid(), w: Math.max(0, Math.round(r.w||0)), h: Math.max(0, Math.round(r.h||0)), hz: Math.max(0, Math.round(r.hz||0)) });
-  const uniq = (rows: Row[]) => {
-    const seen = new Set<string>();
-    const out: Row[] = [];
-    for (const r of rows.map(fix)) { if (!seen.has(r.id)) { seen.add(r.id); out.push(r); } }
-    return out;
-  };
-  return { ...s, active: uniq(s.active), retired: uniq(s.retired) };
-}
-
-function saveState(s: AppState) {
-  localStorage.setItem(k("state"), JSON.stringify(normalize(s)));
-}
-
-function ensureDefaultBackup(s: AppState): AppState {
-  const key = k("backup", "Default");
-  if (!localStorage.getItem(key)) {
-    localStorage.setItem(key, JSON.stringify(s));
-    const list = new Set<string>(JSON.parse(localStorage.getItem(k("backups")) || "[]"));
-    list.add("Default");
-    localStorage.setItem(k("backups"), JSON.stringify(Array.from(list)));
-  }
-  const backups = JSON.parse(localStorage.getItem(k("backups")) || "[]");
-  return { ...s, backups };
-}
-
-function loadState(): AppState {
-  const raw = localStorage.getItem(k("state"));
-  if (raw) {
-    try { const s = normalize(JSON.parse(raw)); return { ...s, driverState: (s as any).driverState || "not-detected" }; } catch {}
-  }
-  const init: AppState = normalize({
-    gpuName: "(Select GPU)",
-    monitorCount: 1,
-    active: [ { id: uid(), w: 1920, h: 1080, hz: 60 }, { id: uid(), w: 2560, h: 1440, hz: 60 } ],
-    retired: [],
-    backups: JSON.parse(localStorage.getItem(k("backups")) || "[]"),
-    selectedBackup: "Default",
-    driverState: "not-detected",
-  });
-  return ensureDefaultBackup(init);
-}
-
-function toFiles(s: AppState) {
-  const src = s.active.filter(r=>r.w>0&&r.h>0&&r.hz>0);
-  const adapter = s.gpuName + "\n";
-  const option = [String(s.monitorCount), ...src.map(r => `${r.w}, ${r.h}, ${r.hz}`)].join("\n") + "\n";
-  const groups: { id: string; w: number; h: number; rates: number[] }[] = [];
-  const seen = new Set<string>();
-  for (const r of src) {
-    const id = `${r.w}x${r.h}`;
-    if (!seen.has(id)) { groups.push({ id, w: r.w, h: r.h, rates: [] }); seen.add(id); }
-    const g = groups.find(g => g.id === id)!;
-    if (!g.rates.includes(r.hz)) g.rates.push(r.hz);
-  }
-  let xml = `<?xml version='1.0' encoding='utf-8'?>\n<vdd_settings>\n  <monitors>\n    <count>${s.monitorCount}</count>\n  </monitors>\n  <gpu>\n    <friendlyname>${escapeXml(s.gpuName || "GPU")}</friendlyname>\n  </gpu>\n  <resolutions>\n`;
-  for (const g of groups) {
-    xml += `    <resolution>\n      <width>${g.w}</width>\n      <height>${g.h}</height>\n`;
-    for (const hz of g.rates) xml += `      <refresh_rate>${hz}</refresh_rate>\n`;
-    xml += `    </resolution>\n`;
-  }
-  xml += `  </resolutions>\n</vdd_settings>`;
-  return { adapter, option, xml };
-}
-
-function escapeXml(s: string){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function crc32(buf: Uint8Array): number {
-  let c = ~0; for (let i=0; i<buf.length; i++){ c ^= buf[i]; for (let k=0; k<8; k++){ c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); } } return ~c >>> 0;
-}
-function dosTimeDate(d = new Date()) {
-  const time = ((d.getHours() << 11) | (d.getMinutes() << 5) | ((Math.floor(d.getSeconds()/2)) & 31)) & 0xffff;
-  const date = ((((d.getFullYear() - 1980) & 127) << 9) | ((d.getMonth()+1) << 5) | d.getDate()) & 0xffff;
-  return { time, date };
-}
-function str8(s: string){ return new TextEncoder().encode(s); }
-function u32(n: number){ const a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, n, true); return a; }
-function u16(n: number){ const a = new Uint8Array(2); new DataView(a.buffer).setUint16(0, n, true); return a; }
-function concat(chunks: Uint8Array[]){ const len = chunks.reduce((n,c)=>n+c.length,0); const out = new Uint8Array(len); let o=0; for(const c of chunks){ out.set(c,o); o+=c.length; } return out; }
-function buildZip(files: {name:string, data:string}[]) {
-  const now = dosTimeDate();
-  const locs: { name: Uint8Array; data: Uint8Array; offset: number; crc: number }[] = [];
-  let offset = 0;
-  const locals: Uint8Array[] = [];
-  for (const f of files) {
-    const name = str8(f.name);
-    const data = new TextEncoder().encode(f.data);
-    const crc = crc32(data);
-    const localHeader = concat([
-      u32(0x04034b50),
-      u16(20),
-      u16(0),
-      u16(0),
-      u16(now.time), u16(now.date),
-      u32(crc), u32(data.length), u32(data.length),
-      u16(name.length), u16(0),
-      name
-    ]);
-    const record = concat([localHeader, data]);
-    locals.push(record);
-    locs.push({ name, data, offset, crc });
-    offset += record.length;
-  }
-  const centrals: Uint8Array[] = [];
-  let csize = 0;
-  for (let i=0;i<locals.length;i++) {
-    const f = locs[i];
-    const name = f.name;
-    const c = concat([
-      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(now.time), u16(now.date),
-      u32(f.crc), u32(f.data.length), u32(f.data.length), u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(f.offset), name
-    ]);
-    centrals.push(c); csize += c.length;
-  }
-  const centralDir = concat(centrals);
-  const end = concat([
-    u32(0x06054b50), u16(0), u16(0), u16(locs.length), u16(locs.length), u32(csize), u32(offset), u16(0)
-  ]);
-  const zip = concat([...locals, centralDir, end]);
-  return new Blob([zip], { type: 'application/zip' });
-}
-
-function downloadZip(name: string, files: { name: string; data: string }[]) {
-  const blob = buildZip(files);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+function normalizeRows(rows: {w:number;h:number;hz:number}[]): Row[] {
+  return rows.map(r => ({ id: uid(), w: Math.max(0, Math.round(r.w||0)), h: Math.max(0, Math.round(r.h||0)), hz: Math.max(0, Math.round(r.hz||0)) }))
 }
 
 export default function App(){
-  const [st, setSt] = useState<AppState>(()=>loadState());
-  const [menuOpen, setMenuOpen] = useState(false);
-  useEffect(()=> saveState(st), [st]);
-  const gpuList = ["NVIDIA GeForce", "AMD Radeon", "Intel Arc"];
+  const [gpuList, setGpuList] = useState<string[]>([])
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [logs, setLogs] = useState<string[]>([])
+  const logRef = useRef<HTMLDivElement>(null)
 
-  const saveBackup = (name: string) => {
-    const nm = (name||"").trim() || "Default";
-    localStorage.setItem(k("backup", nm), JSON.stringify(st));
-    const set = new Set(st.backups); set.add(nm);
-    const backups = Array.from(set);
-    localStorage.setItem(k("backups"), JSON.stringify(backups));
-    setSt({ ...st, backups, selectedBackup: nm });
-  };
-  const loadBackup = (name: string) => {
-    const raw = localStorage.getItem(k("backup", name)); if(!raw) return;
-    const data = normalize(JSON.parse(raw));
-    setSt({ ...data, backups: JSON.parse(localStorage.getItem(k("backups"))||"[]"), selectedBackup: name, driverState: st.driverState });
-  };
-  const deleteBackup = (name: string) => {
-    localStorage.removeItem(k("backup", name));
-    const backups = st.backups.filter(b=>b!==name);
-    localStorage.setItem(k("backups"), JSON.stringify(backups));
-    setSt({ ...st, backups, selectedBackup: backups[0]||"" });
-  };
-  const downloadConfigsZip = () => {
-    const { adapter, option, xml } = toFiles(st);
-    downloadZip("configs.zip", [
-      { name: "adapter.txt", data: adapter },
-      { name: "option.txt", data: option },
-      { name: "vdd_settings.xml", data: xml },
-    ]);
-  };
+  const [st, setSt] = useState<AppState>(()=>({
+    gpuName: "(Select GPU)",
+    monitorCount: 1,
+    active: normalizeRows([{ w:1920, h:1080, hz:60 }]),
+    retired: [],
+    backups: [],
+    selectedBackup: "Default",
+    driverState: "not-detected",
+  }))
 
-  const toggleInstall = () => {
-    if(st.driverState === "not-detected") setSt({...st, driverState: "running"});
-    else if(st.driverState === "stopped") setSt({...st, driverState: "running"});
-    else setSt({...st, driverState: "not-detected"});
-  };
-  const togglePauseStop = () => {
-    if(st.driverState === "running") setSt({...st, driverState: "stopped"});
-    else if(st.driverState === "stopped") setSt({...st, driverState: "running"});
-  };
-  const reloadDriver = () => { setSt({...st, driverState: "running"}); };
-  const signOut = () => { fetch('/api/logout', { method: 'POST' }).finally(()=> location.reload()); };
+  useEffect(() => {
+    const off = window.vdisplay.onLog(line => {
+      setLogs(prev => [...prev, line].slice(-500))
+    })
+    return off
+  }, [])
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: 1e9 })
+  }, [logs])
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setIsAdmin(await window.vdisplay.isAdmin())
+      } catch {}
+      try {
+        const cfg = await window.vdisplay.loadConfig()
+        const gpus = await window.vdisplay.listGpus()
+        const backups = await window.vdisplay.listBackups()
+        setGpuList(gpus)
+        setSt(s => ({
+          ...s,
+          gpuName: cfg.gpuName || s.gpuName,
+          monitorCount: cfg.monitorCount || s.monitorCount,
+          active: normalizeRows(cfg.active || []),
+          backups,
+          selectedBackup: backups.includes(s.selectedBackup) ? s.selectedBackup : (backups[0] || "Default"),
+          driverState: s.driverState
+        }))
+      } catch (e:any) {
+        setLogs(prev => [...prev, `Load error: ${e?.message || e}`])
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    const payload = {
+      gpuName: st.gpuName,
+      monitorCount: st.monitorCount,
+      active: st.active.filter(r=>r.w>0 && r.h>0 && r.hz>0).map(({id, ...rest})=>rest)
+    }
+    window.vdisplay.saveConfig(payload).catch(e=>{
+      setLogs(prev => [...prev, `Save error: ${e?.message || e}`])
+    })
+  }, [st.gpuName, st.monitorCount, st.active])
+
+  const saveBackup = async (name: string) => {
+    const nm = (name||"").trim() || "Default"
+    const payload = { gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active.map(({id,...r})=>r) }
+    await window.vdisplay.saveBackup(nm, payload)
+    const list = await window.vdisplay.listBackups()
+    setSt(s=>({ ...s, backups: list, selectedBackup: nm }))
+  }
+  const loadBackup = async (name: string) => {
+    const data = await window.vdisplay.loadBackup(name)
+    setSt(s=>({
+      ...s,
+      gpuName: data.gpuName || s.gpuName,
+      monitorCount: data.monitorCount || s.monitorCount,
+      active: normalizeRows(data.active || []),
+      selectedBackup: name
+    }))
+  }
+  const deleteBackup = async (name: string) => {
+    await window.vdisplay.deleteBackup(name)
+    const list = await window.vdisplay.listBackups()
+    setSt(s=>({ ...s, backups: list, selectedBackup: list[0] || "" }))
+  }
+
+  const toggleInstall = async () => {
+    try {
+      if (st.driverState === "not-detected") {
+        await window.vdisplay.driverInstall()
+        setSt(s=>({ ...s, driverState: 'running' }))
+      } else {
+        await window.vdisplay.driverUninstall()
+        setSt(s=>({ ...s, driverState: 'not-detected' }))
+      }
+    } catch (e:any) { setLogs(prev=>[...prev, `Install/Uninstall: ${e?.message||e}`]) }
+  }
+  const togglePauseStop = async () => {
+    try {
+      // Use reload as resume if we were "stopped" (UI concept); uninstall/install is handled via install button
+      await window.vdisplay.driverReload()
+      setSt(s=>({ ...s, driverState: s.driverState === 'running' ? 'stopped' : 'running' }))
+    } catch (e:any) { setLogs(prev=>[...prev, `Pause/Resume: ${e?.message||e}`]) }
+  }
+  const reloadDriver = async () => {
+    try { await window.vdisplay.driverReload(); setSt(s=>({ ...s, driverState: 'running' })) }
+    catch (e:any) { setLogs(prev=>[...prev, `Reload: ${e?.message||e}`]) }
+  }
 
   const labelPause = st.driverState === "running" ? "Pause" : "Resume";
   const labelReload = "Reload";
@@ -208,28 +164,24 @@ export default function App(){
 
   return (
     <div style={{ background: brandBg, color: "#f3f4f6", minHeight: "100vh" }}>
-      <div className="max-w-6xl mx-auto px-6 py-5">
+      <div className="max-w-6xl mx-auto px-6 py-3">
+        {!isAdmin && (
+          <div className="mb-3 text-sm flex items-center justify-between rounded-lg px-3 py-2" style={{ background: '#4b244a' }}>
+            <div>Needs Admin to install/uninstall driver.</div>
+            <button onClick={()=>window.vdisplay.relaunchAsAdmin()} className="px-3 py-1.5 rounded-md border border-white/30 hover:bg-white/10" style={{ color: accentText }}>
+              Relaunch as Admin
+            </button>
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div style={{width:40,height:40,borderRadius:8,background:"#1a1f2b"}} />
             <h1 className="text-2xl font-semibold" style={{ color: brandFg }}>Virtual Display Wizard</h1>
           </div>
-          <div className="relative">
-            <GhostBtn onClick={()=> setMenuOpen(v=>!v)}>⚙️ Options</GhostBtn>
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-56 rounded-xl border border-white/15 overflow-hidden shadow-lg" style={{ background: cardBg }}>
-                <MenuItem>Settings</MenuItem>
-                <MenuItem>Authentication</MenuItem>
-                <MenuItem>User</MenuItem>
-                <MenuItem>Check for Updates</MenuItem>
-                <MenuItem>About</MenuItem>
-                <MenuItem>Help</MenuItem>
-                <MenuItem onClick={signOut}>Sign Out</MenuItem>
-              </div>
-            )}
-          </div>
+          <GhostBtn onClick={()=>location.reload()}>🔄 Refresh</GhostBtn>
         </div>
       </div>
+
       <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-4">
         <div className="space-y-4">
           <Card title="Driver">
@@ -250,10 +202,19 @@ export default function App(){
               </div>
             </div>
           </Card>
+
           <Card title="Backups">
             <div className="grid grid-cols-2 gap-3 items-start">
               <div>
-                <GhostBtn onClick={downloadConfigsZip}>Download Configs.zip</GhostBtn>
+                <GhostBtn onClick={async ()=>{
+                  const payload = { gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active.map(({id,...r})=>r) }
+                  const files = toFiles(payload)
+                  downloadZip("configs.zip", [
+                    { name: "adapter.txt", data: files.adapter },
+                    { name: "option.txt", data: files.option },
+                    { name: "vdd_settings.xml", data: files.xml },
+                  ])
+                }}>Download Configs.zip</GhostBtn>
               </div>
               <div>
                 <select className="rounded px-2 py-1 w-full" style={{ color: accentText }} value={st.selectedBackup} onChange={e=>setSt({...st, selectedBackup: e.target.value})}>
@@ -269,9 +230,12 @@ export default function App(){
             </div>
           </Card>
         </div>
+
         <div className="space-y-4">
           <Card title="Log">
-            <div className="h-28 overflow-auto rounded border border-white/10 p-2 text-xs" style={{ background: tableBg, color: tableText }}>—</div>
+            <div ref={logRef} className="h-28 overflow-auto rounded border border-white/10 p-2 text-xs" style={{ background: tableBg, color: tableText, whiteSpace:'pre-wrap' }}>
+              {logs.length ? logs.join('\n') : '—'}
+            </div>
           </Card>
           <Card title="GPU & Monitors">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
@@ -290,9 +254,11 @@ export default function App(){
           </Card>
         </div>
       </div>
+
       <div className="max-w-6xl mx-auto px-6 mt-6">
         <div className="mb-2 font-medium" style={{ color: brandFg }}>Resolution Enablement:</div>
       </div>
+
       <div className="max-w-6xl mx-auto px-6 mt-2 grid md:grid-cols-2 gap-4">
         <ResTable
           title="Disabled / Retired"
@@ -311,12 +277,37 @@ export default function App(){
           mode="active"
         />
       </div>
+
       <div className="max-w-6xl mx-auto px-6 py-8 opacity-70 text-sm">
         <span>© {new Date().getFullYear()} PrecisionPlanIT, HomelabHelpdesk, SoFMeRight (Kai)</span>
       </div>
+
       <style>{baseCss}</style>
     </div>
   );
+}
+
+// ======= helpers reused from your UI (unchanged visuals) =======
+function toFiles(s: {gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]}) {
+  const src = s.active.filter(r=>r.w>0&&r.h>0&&r.hz>0)
+  const adapter = s.gpuName + "\n"
+  const option = [String(s.monitorCount), ...src.map(r => `${r.w}, ${r.h}, ${r.hz}`)].join("\n") + "\n"
+  const groups: { id: string; w: number; h: number; rates: number[] }[] = []
+  const seen = new Set<string>()
+  for (const r of src) {
+    const id = `${r.w}x${r.h}`
+    if (!seen.has(id)) { groups.push({ id, w: r.w, h: r.h, rates: [] }); seen.add(id) }
+    const g = groups.find(g => g.id === id)!
+    if (!g.rates.includes(r.hz)) g.rates.push(r.hz)
+  }
+  let xml = `<?xml version='1.0' encoding='utf-8'?>\n<vdd_settings>\n  <monitors>\n    <count>${s.monitorCount}</count>\n  </monitors>\n  <gpu>\n    <friendlyname>${s.gpuName}</friendlyname>\n  </gpu>\n  <resolutions>\n`
+  for (const g of groups) {
+    xml += `    <resolution>\n      <width>${g.w}</width>\n      <height>${g.h}</height>\n`
+    for (const hz of g.rates) xml += `      <refresh_rate>${hz}</refresh_rate>\n`
+    xml += `    </resolution>\n`
+  }
+  xml += `  </resolutions>\n</vdd_settings>`
+  return { adapter, option, xml }
 }
 
 function moveBetween(ids: string[], from: 'active'|'retired', to: 'active'|'retired', st: AppState, setSt: (s: AppState)=>void){
@@ -336,14 +327,8 @@ function Card(p:{ title:string, children:React.ReactNode }){
   );
 }
 
-function RowBar(p:{ children:React.ReactNode }){ return <div className="flex flex-wrap items-center gap-2">{p.children}</div>; }
-
 function GhostBtn(p:{ children:React.ReactNode, onClick?:()=>void, danger?:boolean }){
   return <button onClick={p.onClick} className={`px-3 py-1.5 rounded-xl text-sm border ${p.danger? 'border-red-400 hover:bg-red-500/25' : 'border-white/30 hover:bg-white/10'}`} style={{ color: p.danger? undefined : accentText }}>{p.children}</button>
-}
-
-function MenuItem(p:{ children:React.ReactNode, onClick?:()=>void }){
-  return <button onClick={p.onClick} className="w-full text-left px-3 py-2 hover:bg-white/10" style={{ color: accentText }}>{p.children}</button>
 }
 
 function NumberSpinner(p:{ value:number, min?:number, max?:number, onChange:(v:number)=>void }){
@@ -356,81 +341,6 @@ function NumberSpinner(p:{ value:number, min?:number, max?:number, onChange:(v:n
       <button className="px-2 py-1 hover:bg-white/10" style={{ color: accentText }} onClick={inc}>+</button>
     </div>
   )
-}
-
-function ResTable(p:{ title:string, rows: Row[], onChange:(r:Row[])=>void, onMove:(ids:string[])=>void, side:'left'|'right', mode:'disabled'|'active' }){
-  const [selected, setSelected] = useState<string[]>([]);
-  const toggleSel = (id:string)=> setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id]);
-  const addBlank = ()=>{ const n: Row = { id: uid(), w: 0, h: 0, hz: 0 }; p.onChange([...p.rows, n]); };
-  const insertAt = (idx:number, pos:'above'|'below')=>{
-    const i = pos==='above'? idx : idx+1;
-    const n: Row = { id: uid(), w: 0, h: 0, hz: 0 };
-    const next = [...p.rows.slice(0,i), n, ...p.rows.slice(i)];
-    p.onChange(next);
-  };
-  const remove = (id:string)=> p.onChange(p.rows.filter(r=>r.id!==id));
-  const updateCell = (id:string, field: keyof Row, value: number)=>{
-    const v = isNum(value) ? Math.max(0, Math.round(value)) : 0;
-    p.onChange(p.rows.map(r=> r.id===id ? { ...r, [field]: v } as Row : r));
-  };
-  const moveUp = (idx:number)=>{ if(idx<=0) return; const arr=[...p.rows]; [arr[idx-1],arr[idx]]=[arr[idx],arr[idx-1]]; p.onChange(arr); };
-  const moveDown = (idx:number)=>{ if(idx>=p.rows.length-1) return; const arr=[...p.rows]; [arr[idx+1],arr[idx]]=[arr[idx],arr[idx+1]]; p.onChange(arr); };
-  const delSelected = ()=> p.onChange(p.rows.filter(r=> !selected.includes(r.id)));
-
-  return (
-    <Card title={p.title}>
-      <div className="mb-2 flex items-center gap-2">
-        {p.mode==='disabled' ? (
-          <>
-            <div className="flex-1" />
-            <GhostBtn danger onClick={delSelected}>Delete</GhostBtn>
-          </>
-        ) : (
-          <>
-            <div className="flex-1" />
-            <GhostBtn onClick={addBlank}>+ Add</GhostBtn>
-            <GhostBtn danger onClick={delSelected}>Delete</GhostBtn>
-          </>
-        )}
-      </div>
-      <div className="rounded-xl border border-white/15 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-white/10 text-white">
-            <tr>
-              <Th className="w-10">Sel</Th>
-              <Th>Width</Th>
-              <Th>Height</Th>
-              <Th>Refresh (Hz)</Th>
-              <Th className="w-40 text-right">Actions</Th>
-            </tr>
-          </thead>
-          <tbody style={{ background: tableBg, color: tableText }}>
-            {p.rows.map((r, idx)=> (
-              <tr key={r.id} className="border-t border-white/10">
-                <td className="text-center"><input type="checkbox" checked={selected.includes(r.id)} onChange={()=>toggleSel(r.id)} /></td>
-                <TdEditable value={r.w} onChange={v=>updateCell(r.id,'w',v)} />
-                <TdEditable value={r.h} onChange={v=>updateCell(r.id,'h',v)} />
-                <TdEditable value={r.hz} onChange={v=>updateCell(r.id,'hz',v)} />
-                <td>
-                  <div className="flex items-center gap-1 justify-end">
-                    <Icon onClick={()=>insertAt(idx,'above')} title="Insert above">⟰</Icon>
-                    <Icon onClick={()=>insertAt(idx,'below')} title="Insert below">⟱</Icon>
-                    <Icon onClick={()=>moveUp(idx)} title="Move up">▲</Icon>
-                    <Icon onClick={()=>moveDown(idx)} title="Move down">▼</Icon>
-                    <Icon onClick={()=>p.onMove([r.id])} title={p.side==='left'? 'Enable (move right)':'Disable (move left)'}>{p.side==='left'? '⇢':'⇠'}</Icon>
-                    <Icon danger onClick={()=>remove(r.id)} title="Delete">✕</Icon>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {p.rows.length===0 && (
-              <tr><td colSpan={5} className="text-center py-8 opacity-60">No rows</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
 }
 
 function Th(p:{ children:React.ReactNode, className?:string }){ return <th className={"text-left px-3 py-2 font-medium "+(p.className||"")}>{p.children}</th>; }
