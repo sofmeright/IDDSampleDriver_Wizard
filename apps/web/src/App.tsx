@@ -1,6 +1,6 @@
 // apps/web/src/App.tsx
 import React, { useEffect, useState } from "react";
-import brandUrl from "./assets/brand.png"; // <— your logo
+const brandUrl = new URL("./assets/brand.png", import.meta.url).href;
 
 declare global { interface Window { vdisplay?: any } }
 // (If your TS setup lacks image module types, uncomment below)
