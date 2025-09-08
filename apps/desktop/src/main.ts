@@ -1,452 +1,448 @@
 // apps/desktop/src/main.ts
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import path from 'node:path'
-import fs from 'node:fs'
-import { spawn, execFile, exec } from 'node:child_process'
+import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } from 'electron';
+import path from 'node:path';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import os from 'node:os';
 
-let win: BrowserWindow | null = null
+let win: BrowserWindow | null = null;
+let tray: Tray | null = null;
+const isDev = process.env.ELECTRON_DEV === '1';
 
-const CONFIG_DIR = 'C:\\IddSampleDriver'
-const APP_DIR = path.join(app.getPath('appData'), 'VirtualDisplayWizard')
-const BACKUP_DIR = path.join(APP_DIR, 'Backups')
-const DRIVER_DIR = path.join(APP_DIR, 'IddDriver')
-const BIN_DIR = path.join(process.resourcesPath, 'bin') // put nefconw.exe here if you ship it
+const RES_UI = path.join(process.resourcesPath, 'ui');
+const UI_INDEX = path.join(RES_UI, 'index.html');
+const BIN_DIR = path.join(process.resourcesPath, 'bin');             // pack nefconw.exe here (optional)
+const USERDATA = app.getPath('userData');
+const BACKUPS = path.join(USERDATA, 'Backups');                       // adapter.txt.<name>.backup etc.
+const DRIVER_DIR = path.join(USERDATA, 'IddDriver');                  // where we auto-download/expand
+const DRIVER_INF = path.join(DRIVER_DIR, 'IddSampleDriver.inf');
+const SYS_DIR = 'C:\\IddSampleDriver';                                // system config folder (same as AHK)
+const SYS_XML = path.join(SYS_DIR, 'vdd_settings.xml');
+const SYS_OPT = path.join(SYS_DIR, 'option.txt');
+const SYS_ADP = path.join(SYS_DIR, 'adapter.txt');
 
-const isDev = process.env.ELECTRON_DEV === '1'
+const DRIVER_ZIP_URL = 'https://github.com/itsmikethetech/Virtual-Display-Driver/releases/download/24.9.11/IddSampleDriver.zip';
+const HARDWARE_ID = 'ROOT\\iddsampledriver';
+const CLASS_GUID = '4D36E968-E325-11CE-BFC1-08002BE10318'; // Display
 
-function sendLog(line: string) {
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('log:append', line)
-  }
-  // also log to console for diagnostics
-  console.log(line)
+// --- log bridge ---
+const logBuffer: string[] = [];
+function log(line: string) {
+  const stamp = new Date().toISOString().replace('T',' ').replace('Z','');
+  const s = `[${stamp}] ${line}`;
+  logBuffer.push(s);
+  if (logBuffer.length > 1000) logBuffer.shift();
+  win?.webContents.send('vdisplay:log', s);
 }
 
-function ensureDirs() {
-  for (const p of [APP_DIR, BACKUP_DIR, DRIVER_DIR]) {
-    try { fs.mkdirSync(p, { recursive: true }) } catch {}
-  }
+// --- small helpers ---
+function exists(p: string) { try { fs.accessSync(p); return true; } catch { return false; } }
+async function ensureDir(p: string) { await fsp.mkdir(p, { recursive: true }); }
+
+function ps(command: string) {
+  // Run PowerShell and capture output (no window)
+  return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
+    const child = spawn('powershell.exe', ['-NoProfile','-ExecutionPolicy','Bypass','-Command', command], { windowsHide: true });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => stdout += d.toString());
+    child.stderr.on('data', d => stderr += d.toString());
+    child.on('close', code => resolve({ code: code ?? 0, stdout, stderr }));
+  });
 }
 
-function readText(p: string) {
-  try { return fs.readFileSync(p, 'utf8') } catch { return '' }
-}
-function writeText(p: string, s: string) {
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, s, 'utf8')
-}
-
-function parseXml(xml: string) {
-  const get = (re: RegExp) => (xml.match(re) ?? [,''])[1]
-  const gpuName = unescapeXml(get(/<friendlyname>([\s\S]*?)<\/friendlyname>/))
-  const count = Number(get(/<monitors>[\s\S]*?<count>(\d+)<\/count>[\s\S]*?<\/monitors>/)) || 0
-  const blocks = xml.split(/<\/resolution>/g)
-  const active: { w:number; h:number; hz:number }[] = []
-  for (const b of blocks) {
-    const w = Number((b.match(/<width>(\d+)<\/width>/) ?? [,''])[1]) || 0
-    const h = Number((b.match(/<height>(\d+)<\/height>/) ?? [,''])[1]) || 0
-    const rMatches = [...b.matchAll(/<refresh_rate>(\d+)<\/refresh_rate>/g)]
-    if (w>0 && h>0 && rMatches.length) {
-      for (const m of rMatches) {
-        const hz = Number(m[1]) || 0
-        if (hz>0) active.push({ w,h,hz })
-      }
-    }
-  }
-  return { gpuName, monitorCount: count, active }
-}
-
-function unescapeXml(s: string) {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-}
-
-function escapeXml(s: string) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-}
-
-function toFiles(payload: {
-  gpuName: string
-  monitorCount: number
-  active: {w:number;h:number;hz:number}[]
-}) {
-  const src = payload.active.filter(r=>r.w>0&&r.h>0&&r.hz>0)
-  const adapter = (payload.gpuName || '') + '\n'
-  const option = [String(payload.monitorCount), ...src.map(r => `${r.w}, ${r.h}, ${r.hz}`)].join('\n') + '\n'
-
-  const key = (w:number,h:number)=>`${w}x${h}`
-  const groups: Record<string,{w:number;h:number;rates:number[]}> = {}
-  for (const r of src) {
-    const k = key(r.w,r.h)
-    if (!groups[k]) groups[k] = { w:r.w, h:r.h, rates:[] }
-    if (!groups[k].rates.includes(r.hz)) groups[k].rates.push(r.hz)
-  }
-
-  let xml = `<?xml version='1.0' encoding='utf-8'?>\n<vdd_settings>\n  <monitors>\n    <count>${payload.monitorCount}</count>\n  </monitors>\n  <gpu>\n    <friendlyname>${escapeXml(payload.gpuName || 'GPU')}</friendlyname>\n  </gpu>\n  <resolutions>\n`
-  for (const g of Object.values(groups)) {
-    xml += `    <resolution>\n      <width>${g.w}</width>\n      <height>${g.h}</height>\n`
-    for (const hz of g.rates) xml += `      <refresh_rate>${hz}</refresh_rate>\n`
-    xml += `    </resolution>\n`
-  }
-  xml += `  </resolutions>\n</vdd_settings>`
-  return { adapter, option, xml }
-}
-
-function readConfigFromDisk() {
-  const xmlPath = path.join(CONFIG_DIR, 'vdd_settings.xml')
-  const optPath = path.join(CONFIG_DIR, 'option.txt')
-  const adaPath = path.join(CONFIG_DIR, 'adapter.txt')
-
-  if (fs.existsSync(xmlPath)) {
-    sendLog(`Reading ${xmlPath}`)
-    const xml = readText(xmlPath)
-    const parsed = parseXml(xml)
-    return { ...parsed }
-  }
-
-  const opt = readText(optPath)
-  const ada = readText(adaPath).trim()
-  if (opt) {
-    sendLog(`Reading ${optPath} + ${adaPath}`)
-    const lines = opt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)
-    const monitorCount = Number(lines.shift() || '0') || 0
-    const active: {w:number;h:number;hz:number}[] = []
-    for (const L of lines) {
-      const m = L.match(/^(\d+)\s*,\s*(\d+)\s*,\s*(\d+)$/)
-      if (m) active.push({ w:+m[1], h:+m[2], hz:+m[3] })
-    }
-    return { gpuName: ada || '(Select GPU)', monitorCount, active }
-  }
-
-  sendLog(`No config found; initializing defaults`)
-  return {
-    gpuName: '(Select GPU)',
-    monitorCount: 1,
-    active: [{ w:1920, h:1080, hz:60 }]
-  }
-}
-
-function writeConfigToDisk(payload: {
-  gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]
-}) {
-  ensureDirs()
-  const { adapter, option, xml } = toFiles(payload)
-  writeText(path.join(CONFIG_DIR,'adapter.txt'), adapter)
-  writeText(path.join(CONFIG_DIR,'option.txt'), option)
-  writeText(path.join(CONFIG_DIR,'vdd_settings.xml'), xml)
-  sendLog(`Wrote adapter.txt, option.txt, vdd_settings.xml to ${CONFIG_DIR}`)
-}
-
-function listBackups(): string[] {
-  ensureDirs()
-  if (!fs.existsSync(BACKUP_DIR)) return []
-  const names = new Set<string>()
-  const files = fs.readdirSync(BACKUP_DIR)
-  const rx = /^(adapter\.txt|option\.txt|vdd_settings\.xml)\.(.+)\.backup$/i
-  for (const f of files) {
-    const m = f.match(rx)
-    if (m) names.add(m[2])
-  }
-  return Array.from(names).sort()
-}
-
-function loadBackup(name: string) {
-  ensureDirs()
-  const xmlPath = path.join(BACKUP_DIR, `vdd_settings.xml.${name}.backup`)
-  const optPath = path.join(BACKUP_DIR, `option.txt.${name}.backup`)
-  const adaPath = path.join(BACKUP_DIR, `adapter.txt.${name}.backup`)
-
-  if (fs.existsSync(xmlPath)) {
-    const parsed = parseXml(readText(xmlPath))
-    sendLog(`Loaded backup "${name}" (xml)`)
-    return parsed
-  }
-
-  if (fs.existsSync(optPath) || fs.existsSync(adaPath)) {
-    const opt = readText(optPath)
-    const ada = readText(adaPath).trim()
-    const lines = opt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)
-    const monitorCount = Number(lines.shift() || '0') || 0
-    const active: {w:number;h:number;hz:number}[] = []
-    for (const L of lines) {
-      const m = L.match(/^(\d+)\s*,\s*(\d+)\s*,\s*(\d+)$/)
-      if (m) active.push({ w:+m[1], h:+m[2], hz:+m[3] })
-    }
-    sendLog(`Loaded backup "${name}" (txt)`)
-    return { gpuName: ada || '(Select GPU)', monitorCount, active }
-  }
-
-  throw new Error(`Backup "${name}" not found`)
-}
-
-function saveBackup(name: string, payload: {
-  gpuName:string; monitorCount:number; active:{w:number;h:number;hz:number}[]
-}) {
-  ensureDirs()
-  const { adapter, option, xml } = toFiles(payload)
-  writeText(path.join(BACKUP_DIR, `adapter.txt.${name}.backup`), adapter)
-  writeText(path.join(BACKUP_DIR, `option.txt.${name}.backup`), option)
-  writeText(path.join(BACKUP_DIR, `vdd_settings.xml.${name}.backup`), xml)
-  sendLog(`Saved backup "${name}"`)
-}
-
-function deleteBackup(name: string) {
-  ensureDirs()
-  for (const base of ['adapter.txt','option.txt','vdd_settings.xml']) {
-    const p = path.join(BACKUP_DIR, `${base}.${name}.backup`)
-    try { fs.unlinkSync(p); sendLog(`Deleted ${path.basename(p)}`) } catch {}
-  }
-}
-
-function psBool(script: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile','-ExecutionPolicy','Bypass','-Command', script], (err, stdout) => {
-      if (err) return resolve(false)
-      const s = (stdout||'').toString().trim().toLowerCase()
-      resolve(s === 'true')
-    })
-  })
+function cmd(command: string) {
+  // Run CMD and capture output
+  return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
+    const child = spawn('cmd.exe', ['/d','/s','/c', command], { windowsHide: true });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => stdout += d.toString());
+    child.stderr.on('data', d => stderr += d.toString());
+    child.on('close', code => resolve({ code: code ?? 0, stdout, stderr }));
+  });
 }
 
 async function isAdmin(): Promise<boolean> {
-  return psBool('(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)')
+  const { stdout } = await ps('([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)');
+  return /True/i.test(stdout.trim());
 }
 
-function relaunchAsAdmin() {
-  const exe = process.execPath
-  const args = process.argv.slice(1) // preserve CLI semantics
-  const quotedArgs = args.map(a => `'${a.replace(/'/g,"''")}'`).join(', ')
-  const cmd = `Start-Process -FilePath '${exe.replace(/'/g,"''")}' -ArgumentList ${quotedArgs} -Verb RunAs`
-  execFile('powershell.exe', ['-NoProfile','-ExecutionPolicy','Bypass','-Command', cmd])
-  app.quit()
+async function relaunchAsAdmin() {
+  const exe = process.execPath.replace(/"/g,'`"');
+  const args = process.argv.slice(1).map(a => a.replace(/"/g,'`"')).join(' ');
+  const command = `Start-Process -Verb RunAs -FilePath "${exe}" -ArgumentList "${args}"`;
+  await ps(command);
+  app.quit();
 }
 
-function psOut(cmd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile','-ExecutionPolicy','Bypass','-Command', cmd], { maxBuffer: 10*1024*1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr?.toString() || err.message))
-      resolve(stdout?.toString() ?? '')
-    })
-  })
-}
-
+// --- GPU list via CIM (keeps your filtering) ---
 async function listGpus(): Promise<string[]> {
-  const out = await psOut(`Get-CimInstance -ClassName Win32_VideoController | Select-Object -ExpandProperty Name`)
-  const raw = out.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)
-  const skip = [
-    'IddSampleDriver',
-    'Microsoft Remote Display Adapter',
-    'Parsec Virtual Display Adapter',
-    'Virtual Display with HDR'
-  ].map(s=>s.toLowerCase())
-  const names = raw.filter(n => !skip.some(s => n.toLowerCase().includes(s)))
-  return Array.from(new Set(names))
+  const { stdout } = await ps(`Get-CimInstance -ClassName Win32_VideoController | Select-Object -ExpandProperty Name`);
+  const lines = stdout.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const banned = [
+    'IddSampleDriver', 'Microsoft Remote Display Adapter', 'Parsec Virtual Display Adapter', 'Virtual Display with HDR'
+  ];
+  const out = lines.filter(n => !banned.some(b=> n.toLowerCase().includes(b.toLowerCase())));
+  log(`GPUs: ${out.join(' | ') || '(none)'}`);
+  return out;
 }
 
-async function driverInfName(): Promise<string|undefined> {
+// --- driver zip bootstrap (download + expand) ---
+async function ensureDriverPackage(): Promise<boolean> {
   try {
-    const out = await psOut(`pnputil /enum-devices /deviceid ROOT\\iddsampledriver`)
-    const m = out.match(/Driver Name:\s+(oem\d+\.inf)/i)
-    return m?.[1]
-  } catch { return undefined }
+    if (exists(DRIVER_INF)) {
+      log('Driver package present.');
+      return true;
+    }
+    log('Driver package missing — downloading.');
+    await ensureDir(DRIVER_DIR);
+    const zip = path.join(DRIVER_DIR, 'IddSampleDriver.zip').replace(/\\/g,'/');
+    const url = DRIVER_ZIP_URL.replace(/"/g,'`"');
+    const dl = `Invoke-WebRequest -UseBasicParsing -OutFile "${zip}" -Uri "${url}"`;
+    const ex = `Expand-Archive -LiteralPath "${zip}" -DestinationPath "${DRIVER_DIR}" -Force`;
+    const copy = `Copy-Item "${path.join(DRIVER_DIR,'IddSampleDriver','*')}" -Destination "${DRIVER_DIR}" -Force`;
+    const cleanup = `Remove-Item -Recurse -Force "${path.join(DRIVER_DIR,'IddSampleDriver')}" ; Remove-Item "${zip}" -Force`;
+    const { code, stderr } = await ps(`${dl}; ${ex}; ${copy}; ${cleanup}`);
+    if (code !== 0) { log(`Driver download failed: ${stderr}`); return false; }
+    log('Driver package downloaded.');
+    return exists(DRIVER_INF);
+  } catch (e:any) {
+    log(`ensureDriverPackage error: ${e.message||e}`);
+    return false;
+  }
 }
 
-async function ensureDriverFiles(): Promise<void> {
-  const inf = path.join(DRIVER_DIR, 'IddSampleDriver.inf')
-  if (fs.existsSync(inf)) return
-  sendLog('Driver package missing; downloading…')
-  ensureDirs()
-  const zipPath = path.join(DRIVER_DIR, 'IddSampleDriver.zip')
-  const ps = `
-$ProgressPreference='SilentlyContinue'
-$u='https://github.com/itsmikethetech/Virtual-Display-Driver/releases/download/24.9.11/IddSampleDriver.zip'
-$dst='${zipPath.replace(/\\/g,'\\\\')}'
-Invoke-WebRequest -Uri $u -OutFile $dst
-Expand-Archive -LiteralPath $dst -DestinationPath '${DRIVER_DIR.replace(/\\/g,'\\\\')}' -Force
-`
-  await psOut(ps)
-  sendLog('Driver package downloaded/unpacked.')
+// --- config I/O (XML preferred, TXT fallback) ---
+type Row = { id: string; w: number; h: number; hz: number };
+type AppConfig = { gpuName: string; monitorCount: number; active: Row[]; retired: Row[] };
+
+function uid() { return Math.random().toString(36).slice(2,10); }
+
+function parseXml(xml: string): AppConfig | null {
+  try {
+    const gc = /<count>\s*([0-9]+)\s*<\/count>/i.exec(xml)?.[1];
+    const mon = gc ? parseInt(gc,10) : 1;
+    const gpu = /<friendlyname>([^<]+)<\/friendlyname>/i.exec(xml)?.[1] ?? '(Select GPU)';
+    const blocks = Array.from(xml.matchAll(/<resolution>([\s\S]*?)<\/resolution>/gi)).map(m=>m[1]);
+    const rows: Row[] = [];
+    for (const b of blocks) {
+      const w = parseInt(/<width>\s*([0-9]+)\s*<\/width>/i.exec(b)?.[1] ?? '0',10);
+      const h = parseInt(/<height>\s*([0-9]+)\s*<\/height>/i.exec(b)?.[1] ?? '0',10);
+      const rates = Array.from(b.matchAll(/<refresh_rate>\s*([0-9]+)\s*<\/refresh_rate>/gi)).map(m=>parseInt(m[1],10));
+      for (const hz of (rates.length?rates:[0])) rows.push({ id: uid(), w, h, hz });
+    }
+    return { gpuName: gpu, monitorCount: mon, active: rows.filter(r=>r.w&&r.h&&r.hz), retired: [] };
+  } catch { return null; }
+}
+
+function toFilesFromState(s: AppConfig) {
+  const valid = s.active.filter(r=>r.w>0&&r.h>0&&r.hz>0);
+  const adapter = (s.gpuName||'(Select GPU)') + '\n';
+  const option = [String(s.monitorCount), ...valid.map(r=>`${r.w}, ${r.h}, ${r.hz}`)].join('\n') + '\n';
+  // group for XML
+  const groups = new Map<string,{w:number,h:number,hz:number[]}>();
+  for (const r of valid) {
+    const k = `${r.w}x${r.h}`;
+    if (!groups.has(k)) groups.set(k, { w:r.w, h:r.h, hz: [] });
+    const g = groups.get(k)!; if (!g.hz.includes(r.hz)) g.hz.push(r.hz);
+  }
+  let xml = `<?xml version='1.0' encoding='utf-8'?>\n<vdd_settings>\n  <monitors>\n    <count>${s.monitorCount}</count>\n  </monitors>\n  <gpu>\n    <friendlyname>${(s.gpuName||'GPU')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</friendlyname>\n  </gpu>\n  <resolutions>\n`;
+  for (const g of groups.values()) {
+    xml += `    <resolution>\n      <width>${g.w}</width>\n      <height>${g.h}</height>\n`;
+    for (const hz of g.hz) xml += `      <refresh_rate>${hz}</refresh_rate>\n`;
+    xml += `    </resolution>\n`;
+  }
+  xml += `  </resolutions>\n</vdd_settings>`;
+  return { adapter, option, xml };
+}
+
+async function loadSystemConfig(): Promise<AppConfig> {
+  try {
+    if (exists(SYS_XML)) {
+      const xml = await fsp.readFile(SYS_XML, 'utf8');
+      const cfg = parseXml(xml);
+      if (cfg) { log(`Loaded XML config from ${SYS_XML}`); return cfg; }
+    }
+    let mon = 1, gpu = '(Select GPU)'; const rows: Row[] = [];
+    if (exists(SYS_OPT)) {
+      const txt = await fsp.readFile(SYS_OPT, 'utf8');
+      const lines = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      if (lines.length) {
+        const maybe = parseInt(lines[0],10); if (!isNaN(maybe)) mon = maybe;
+        for (const line of lines.slice(1)) {
+          const m = line.match(/^\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*$/);
+          if (m) rows.push({ id: uid(), w: +m[1], h: +m[2], hz: +m[3] });
+        }
+      }
+      log(`Loaded TXT option from ${SYS_OPT}`);
+    }
+    if (exists(SYS_ADP)) {
+      gpu = (await fsp.readFile(SYS_ADP, 'utf8')).split(/\r?\n/)[0]?.trim() || gpu;
+      log(`Loaded adapter from ${SYS_ADP}`);
+    }
+    return { gpuName: gpu, monitorCount: mon, active: rows.filter(r=>r.w&&r.h&&r.hz), retired: [] };
+  } catch (e:any) {
+    log(`loadSystemConfig error: ${e.message||e}`); 
+    return { gpuName:'(Select GPU)', monitorCount:1, active:[], retired:[] };
+  }
+}
+
+async function writeSystemConfig(cfg: AppConfig) {
+  await ensureDir(SYS_DIR);
+  const { adapter, option, xml } = toFilesFromState(cfg);
+  await fsp.writeFile(SYS_ADP, adapter, 'utf8');
+  await fsp.writeFile(SYS_OPT, option, 'utf8');
+  await fsp.writeFile(SYS_XML, xml, 'utf8');
+  log(`Wrote config to ${SYS_DIR}`);
+}
+
+// --- backups with your filenames ---
+async function listBackups(): Promise<string[]> {
+  await ensureDir(BACKUPS);
+  const files = await fsp.readdir(BACKUPS);
+  const names = new Set<string>();
+  for (const f of files) {
+    const m = f.match(/\.(.+)\.backup$/); if (m) names.add(m[1]);
+  }
+  return Array.from(names).sort();
+}
+async function saveBackup(name: string, cfg: AppConfig) {
+  await ensureDir(BACKUPS);
+  const { adapter, option, xml } = toFilesFromState(cfg);
+  await fsp.writeFile(path.join(BACKUPS, `adapter.txt.${name}.backup`), adapter, 'utf8');
+  await fsp.writeFile(path.join(BACKUPS, `option.txt.${name}.backup`), option, 'utf8');
+  await fsp.writeFile(path.join(BACKUPS, `vdd_settings.xml.${name}.backup`), xml, 'utf8');
+  log(`Saved backup "${name}"`);
+}
+async function loadBackup(name: string): Promise<AppConfig|null> {
+  const xmlf = path.join(BACKUPS, `vdd_settings.xml.${name}.backup`);
+  if (exists(xmlf)) {
+    const xml = await fsp.readFile(xmlf, 'utf8');
+    const cfg = parseXml(xml); if (cfg) { log(`Loaded backup "${name}" (xml)`); return cfg; }
+  }
+  const optf = path.join(BACKUPS, `option.txt.${name}.backup`);
+  const adpf = path.join(BACKUPS, `adapter.txt.${name}.backup`);
+  if (exists(optf) || exists(adpf)) {
+    let base = await loadSystemConfig();
+    if (exists(optf)) {
+      const txt = await fsp.readFile(optf, 'utf8');
+      const lines = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+      if (lines.length) {
+        const mon = parseInt(lines[0],10); if (!isNaN(mon)) base.monitorCount = mon;
+        const rows: Row[] = [];
+        for (const ln of lines.slice(1)) {
+          const m = ln.match(/^\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*$/);
+          if (m) rows.push({ id: uid(), w:+m[1], h:+m[2], hz:+m[3] });
+        }
+        base.active = rows;
+      }
+    }
+    if (exists(adpf)) base.gpuName = (await fsp.readFile(adpf,'utf8')).split(/\r?\n/)[0]?.trim() || base.gpuName;
+    log(`Loaded backup "${name}" (txt)`);
+    return base;
+  }
+  return null;
+}
+async function deleteBackup(name: string) {
+  const files = [
+    path.join(BACKUPS, `adapter.txt.${name}.backup`),
+    path.join(BACKUPS, `option.txt.${name}.backup`),
+    path.join(BACKUPS, `vdd_settings.xml.${name}.backup`),
+  ];
+  for (const f of files) { if (exists(f)) await fsp.rm(f, { force: true }); }
+  log(`Deleted backup "${name}"`);
+}
+
+// --- driver mgmt ---
+async function getInfName(): Promise<string|undefined> {
+  // same spirit as AHK (regex Driver Name: oem#.inf)
+  const { stdout } = await cmd(`pnputil /enum-devices /deviceid ${HARDWARE_ID}`);
+  const m = stdout.match(/Driver Name:\s+(oem[0-9]+\.inf)/i);
+  return m?.[1];
+}
+
+function nefconwPath() {
+  const p = path.join(BIN_DIR, 'nefconw.exe');
+  return exists(p) ? p : null;
 }
 
 async function driverInstall(): Promise<void> {
-  if (!(await isAdmin())) throw new Error('Administrator privileges required')
-  await ensureDriverFiles()
+  log('Driver install requested');
+  if (!(await isAdmin())) { log('Admin required for install'); throw new Error('ELEVATION_REQUIRED'); }
+  const ok = await ensureDriverPackage();
+  if (!ok) throw new Error('DRIVER_DOWNLOAD_FAILED');
 
-  const nef = path.join(BIN_DIR, 'nefconw.exe')
-  if (fs.existsSync(nef)) {
-    await psOut(`& '${nef.replace(/\\/g,'\\\\')}' --create-device-node --hardware-id ROOT\\iddsampledriver --class-name Display --class-guid 4D36E968-E325-11CE-BFC1-08002BE10318`)
-    sendLog('Created device node via nefconw.exe')
+  const nef = nefconwPath();
+  if (nef) {
+    const create = `"${nef}" --create-device-node --hardware-id ${HARDWARE_ID} --class-name Display --class-guid ${CLASS_GUID}`;
+    const r = await cmd(create);
+    log(`nefconw create-device-node: ${r.code}`);
+    if (r.stderr) log(r.stderr.trim());
   } else {
-    sendLog('nefconw.exe not packaged; skipping device-node creation')
+    log('nefconw.exe not found; skipping device-node creation');
   }
-
-  const inf = path.join(DRIVER_DIR, 'IddSampleDriver.inf')
-  await psOut(`pnputil /add-driver '${inf.replace(/\\/g,'\\\\')}' /install`)
-  sendLog('pnputil add-driver complete')
+  const add = await cmd(`pnputil /add-driver "${DRIVER_INF}" /install`);
+  log(`pnputil add-driver: ${add.code}`);
+  if (add.stderr) log(add.stderr.trim());
 }
 
 async function driverUninstall(): Promise<void> {
-  if (!(await isAdmin())) throw new Error('Administrator privileges required')
-  const inf = await driverInfName()
+  log('Driver uninstall requested');
+  if (!(await isAdmin())) { log('Admin required for uninstall'); throw new Error('ELEVATION_REQUIRED'); }
+  const inf = await getInfName();
   if (inf) {
-    await psOut(`pnputil /delete-driver ${inf} /uninstall /force`)
-    sendLog(`Deleted driver ${inf}`)
+    const del = await cmd(`pnputil /delete-driver ${inf} /uninstall /force`);
+    log(`pnputil delete-driver: ${del.code}`);
+    if (del.stderr) log(del.stderr.trim());
   }
-  await psOut(`pnputil /remove-device /deviceid ROOT\\iddsampledriver`)
-  sendLog('Removed device ROOT\\iddsampledriver')
+  const rem = await cmd(`pnputil /remove-device /deviceid ${HARDWARE_ID}`);
+  log(`pnputil remove-device: ${rem.code}`);
+  if (rem.stderr) log(rem.stderr.trim());
 }
 
 async function driverReload(): Promise<void> {
-  if (!(await isAdmin())) throw new Error('Administrator privileges required')
-  await psOut(`pnputil /restart-device /deviceid ROOT\\iddsampledriver`)
-  sendLog('Restarted device ROOT\\iddsampledriver')
+  log('Driver reload requested');
+  if (!(await isAdmin())) { log('Admin required for reload'); throw new Error('ELEVATION_REQUIRED'); }
+  const r = await cmd(`pnputil /restart-device /deviceid ${HARDWARE_ID}`);
+  log(`pnputil restart-device: ${r.code}`);
+  if (r.stderr) log(r.stderr.trim());
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1120,
-    height: 800,
-    show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.cjs') }
-  })
+// --- CLI (Sunshine integration) ---
+async function handleCli(): Promise<boolean> {
+  // return true if handled and app should exit
+  const args = process.argv.slice(1).filter(a => !a.startsWith('--inspect'));
+  const head = args[0]?.toLowerCase();
+  if (!head) return false;
 
-  const url = isDev
-    ? 'http://localhost:5173'
-    : `file://${path.join(process.resourcesPath, 'ui', 'index.html').replace(/\\/g,'/')}`
-
-  win.loadURL(url)
-  win.on('ready-to-show', () => win?.show())
-  win.on('closed', () => { win = null })
-}
-
-function ensureWindow() {
-  if (!win || win.isDestroyed()) { createWindow(); return }
-  if (win.isMinimized()) win.restore()
-  win.show(); win.focus()
-}
-
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) app.quit()
-else {
-  app.on('second-instance', () => ensureWindow())
-  app.whenReady().then(() => {
-    ensureDirs()
-    createWindow()
-    wireIpc()
-    handleCliOnce()
-  })
-  app.on('activate', () => ensureWindow())
-  app.on('window-all-closed', () => {})
-}
-
-function wireIpc() {
-  ipcMain.handle('admin:is-elevated', async () => await isAdmin())
-  ipcMain.handle('admin:relaunch', () => { relaunchAsAdmin() })
-
-  ipcMain.handle('gpus:list', async () => {
-    try { const g = await listGpus(); return g }
-    catch (e:any) { sendLog(`GPU list error: ${e.message}`); return [] }
-  })
-
-  ipcMain.handle('config:load', async () => {
-    try { return readConfigFromDisk() }
-    catch (e:any) { sendLog(`Load config error: ${e.message}`); throw e }
-  })
-  ipcMain.handle('config:save', async (_e, payload) => {
-    try { writeConfigToDisk(payload); return true }
-    catch (e:any) { sendLog(`Write config error: ${e.message}`); throw e }
-  })
-
-  ipcMain.handle('backups:list', async () => listBackups())
-  ipcMain.handle('backups:save', async (_e, name:string, payload:any) => { saveBackup(name, payload); return true })
-  ipcMain.handle('backups:load', async (_e, name:string) => loadBackup(name))
-  ipcMain.handle('backups:delete', async (_e, name:string) => { deleteBackup(name); return true })
-
-  ipcMain.handle('driver:install', async () => { await driverInstall(); return true })
-  ipcMain.handle('driver:uninstall', async () => { await driverUninstall(); return true })
-  ipcMain.handle('driver:reload', async () => { await driverReload(); return true })
-}
-
-function handleCliOnce() {
-  const args = process.argv.slice(1) // keep parity with AHK naming
-  // e.g. Driv_Inst | Driv_Unin | Driv_Relo
-  // Back_Load <name> | Back_Save <name> | Back_Remo <name>
-  // Moni_Sets <int>
-  // GPUs_Sets <string>
-  // Reso_Adds <w> <h> <hz>
-  // Reso_Remo <w> <h> <hz>
-  if (!args.length) return
-  const cmd = args[0]
-  const rest = args.slice(1)
-  sendLog(`CLI: ${cmd} ${rest.join(' ')}`)
+  // Accept AHK verbs (case-insensitive)
+  const verb = head;
+  const tail = args.slice(1);
 
   try {
-    switch (cmd) {
-      case 'Driv_Inst': driverInstall().finally(()=>app.quit()); break
-      case 'Driv_Unin': driverUninstall().finally(()=>app.quit()); break
-      case 'Driv_Relo': driverReload().finally(()=>app.quit()); break
+    switch (verb) {
+      case 'driv_inst': await driverInstall(); return true;
+      case 'driv_unin': await driverUninstall(); return true;
+      case 'driv_relo': await driverReload(); return true;
 
-      case 'Back_Load': {
-        const name = rest[0] || 'Default'
-        const s = loadBackup(name)
-        writeConfigToDisk(s)
-        app.quit()
-        break
+      case 'back_load': {
+        const name = tail.join(' ').trim();
+        const cfg = name ? await loadBackup(name) : null;
+        if (cfg) await writeSystemConfig(cfg);
+        return true;
       }
-      case 'Back_Save': {
-        const name = rest[0] || 'Default'
-        const s = readConfigFromDisk()
-        saveBackup(name, s)
-        app.quit()
-        break
+      case 'back_save': {
+        const name = tail.join(' ').trim() || 'Default';
+        const cfg = await loadSystemConfig();
+        await saveBackup(name, cfg);
+        return true;
       }
-      case 'Back_Remo': {
-        const name = rest[0] || 'Default'
-        deleteBackup(name)
-        app.quit()
-        break
+      case 'back_remo': {
+        const name = tail.join(' ').trim();
+        if (name) await deleteBackup(name);
+        return true;
       }
-
-      case 'Moni_Sets': {
-        const n = Number(rest[0]||'0')||0
-        const s = readConfigFromDisk()
-        s.monitorCount = n
-        writeConfigToDisk(s)
-        app.quit()
-        break
+      case 'moni_sets': {
+        const n = parseInt(tail[0]||'0',10);
+        if (n>0) { const cfg = await loadSystemConfig(); cfg.monitorCount = n; await writeSystemConfig(cfg); }
+        return true;
       }
-
-      case 'GPUs_Sets': {
-        const val = rest.join(' ').trim()
-        const s = readConfigFromDisk()
-        s.gpuName = val || s.gpuName
-        writeConfigToDisk(s)
-        app.quit()
-        break
+      case 'gpus_sets': {
+        const v = tail.join(' ').trim();
+        if (v) { const cfg = await loadSystemConfig(); cfg.gpuName = v; await writeSystemConfig(cfg); }
+        return true;
       }
-
-      case 'Reso_Adds': {
-        const [w,h,hz] = rest.map(n=>Number(n)||0)
-        const s = readConfigFromDisk()
-        s.active = [{w,h,hz}, ...s.active.filter(r=>!(r.w===w&&r.h===h&&r.hz===hz))]
-        writeConfigToDisk(s)
-        app.quit()
-        break
-      }
-
-      case 'Reso_Remo': {
-        const [w,h,hz] = rest.map(n=>Number(n)||0)
-        const s = readConfigFromDisk()
-        s.active = s.active.filter(r=>!(r.w===w&&r.h===h&&r.hz===hz))
-        writeConfigToDisk(s)
-        app.quit()
-        break
+      case 'reso_adds':
+      case 'reso_remo': {
+        const [w,h,hz] = tail.map(x=>parseInt(x,10));
+        if (w&&h&&hz) {
+          const cfg = await loadSystemConfig();
+          const key = (r:Row)=> r.w===w&&r.h===h&&r.hz===hz;
+          if (verb==='reso_adds') {
+            cfg.active = [{ id: uid(), w,h,hz }, ...cfg.active.filter(r=>!key(r))];
+          } else {
+            cfg.active = cfg.active.filter(r=>!key(r));
+          }
+          await writeSystemConfig(cfg);
+        }
+        return true;
       }
     }
   } catch (e:any) {
-    dialog.showErrorBox('Command error', e?.message || String(e))
-    app.quit()
+    log(`CLI error: ${e.message||e}`);
+    return true;
   }
+  return false;
+}
+
+// --- IPC surface for renderer ---
+type AppState = AppConfig & { backups: string[], driverState: 'not-detected'|'stopped'|'running' };
+ipcMain.handle('vdisplay:init', async () => {
+  const [admin, gpus, cfg, bks] = await Promise.all([isAdmin(), listGpus(), loadSystemConfig(), listBackups()]);
+  // driver presence (approx) — if we have an INF bound, consider running; else not-detected
+  const inf = await getInfName();
+  const driverState: AppState['driverState'] = inf ? 'running' : 'not-detected';
+  return { isAdmin: admin, gpus, config: cfg, backups: bks, driverState, log: logBuffer };
+});
+ipcMain.handle('vdisplay:saveConfig', async (_e, cfg: AppConfig) => { await writeSystemConfig(cfg); return true; });
+ipcMain.handle('vdisplay:listGpus', async () => listGpus());
+ipcMain.handle('vdisplay:backups:list', async () => listBackups());
+ipcMain.handle('vdisplay:backups:save', async (_e, name: string, cfg: AppConfig) => { await saveBackup(name, cfg); return true; });
+ipcMain.handle('vdisplay:backups:load', async (_e, name: string) => await loadBackup(name));
+ipcMain.handle('vdisplay:backups:delete', async (_e, name: string) => { await deleteBackup(name); return true; });
+
+ipcMain.handle('vdisplay:driver:install', async () => { try { await driverInstall(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
+ipcMain.handle('vdisplay:driver:uninstall', async () => { try { await driverUninstall(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
+ipcMain.handle('vdisplay:driver:reload', async () => { try { await driverReload(); return { ok:true }; } catch(e:any){ return { ok:false, error:String(e.message||e) }; } });
+ipcMain.handle('vdisplay:driver:ensurePkg', async () => await ensureDriverPackage());
+ipcMain.handle('vdisplay:admin:check', async () => await isAdmin());
+ipcMain.handle('vdisplay:admin:relaunch', async () => { await relaunchAsAdmin(); return true; });
+
+// --- window/tray ---
+function createWindow() {
+  const w = new BrowserWindow({
+    width: 1120, height: 800, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs') }
+  });
+  if (isDev) w.loadURL('http://localhost:5173');
+  else {
+    if (!exists(UI_INDEX)) {
+      dialog.showErrorBox('UI not found', `Expected ${UI_INDEX}\nMake sure apps/web/dist was copied to resources/ui.`);
+    } else {
+      w.loadFile(UI_INDEX);
+    }
+  }
+  w.on('ready-to-show', ()=> { if (!w.isDestroyed()) w.show(); });
+  w.on('closed', ()=> { if (win===w) win = null; });
+  win = w;
+}
+
+function ensureWindow() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) { app.quit(); }
+else {
+  app.on('second-instance', ()=> ensureWindow());
+  app.whenReady().then(async () => {
+    const handled = await handleCli();
+    if (handled) { app.quit(); return; }
+    createWindow();
+
+    const img = nativeImage.createEmpty();
+    tray = new Tray(img);
+    tray.setToolTip('Virtual Display Wizard');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open', click: ()=> ensureWindow() },
+      { label: 'Show Config Folder', click: ()=> shell.openPath(SYS_DIR) },
+      { type:'separator' },
+      { label: 'Quit', click: ()=> app.quit() },
+    ]));
+  });
+  app.on('activate', ()=> ensureWindow());
+  app.on('window-all-closed', ()=> {});
 }

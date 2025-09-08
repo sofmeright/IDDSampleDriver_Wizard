@@ -1,6 +1,8 @@
 // apps/web/src/App.tsx
 import React, { useEffect, useState } from "react";
 
+declare global { interface Window { vdisplay?: any } }
+
 const brandBg = "#310937";
 const brandFg = "#00f19d";
 const cardBg = "#301c35";
@@ -94,7 +96,6 @@ function toFiles(s: AppState) {
 
 function escapeXml(s: string){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ---- tiny ZIP helper so “Download Configs.zip” works ----
 function crc32(buf: Uint8Array): number {
   let c = ~0; for (let i=0; i<buf.length; i++){ c ^= buf[i]; for (let k=0; k<8; k++){ c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); } } return ~c >>> 0;
 }
@@ -149,20 +150,67 @@ function buildZip(files: {name:string, data:string}[]) {
   const zip = concat([...locals, centralDir, end]);
   return new Blob([zip], { type: 'application/zip' });
 }
+
 function downloadZip(name: string, files: { name: string; data: string }[]) {
   const blob = buildZip(files);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
 }
-// ---------------------------------------------------------
 
 export default function App(){
   const [st, setSt] = useState<AppState>(()=>loadState());
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(()=> saveState(st), [st]);
-  const gpuList = ["NVIDIA GeForce", "AMD Radeon", "Intel Arc"];
 
+  // === IPC wiring (a–b) ===
+  const api = typeof window !== 'undefined' ? window.vdisplay : undefined;
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const [gpuList, setGpuList] = useState<string[]>(["NVIDIA GeForce", "AMD Radeon", "Intel Arc"]); // fallback
+
+  useEffect(() => {
+    if (!api) return;
+    api.init().then((init:any) => {
+      setIsAdmin(init.isAdmin);
+      setGpuList(init.gpus?.length ? init.gpus : gpuList);
+      setSt(s => ({
+        ...s,
+        gpuName: init.config.gpuName || s.gpuName,
+        monitorCount: init.config.monitorCount ?? s.monitorCount,
+        active: init.config.active?.length ? init.config.active : s.active,
+        retired: init.config.retired ?? s.retired,
+        backups: init.backups ?? s.backups,
+        driverState: init.driverState
+      }));
+      setLogLines(init.log || []);
+    });
+    api.onLog((line:string) => setLogLines(prev => [...prev, line].slice(-500)));
+  }, []);
+
+  useEffect(() => {
+    if (!api) return;
+    // whenever key fields change, write system config
+    api.saveConfig({ gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active, retired: st.retired }).catch(()=>{});
+  }, [st.gpuName, st.monitorCount, st.active]);
+
+  const relaunchAdmin = () => api?.relaunchAsAdmin();
+
+  const doInstall = async () => {
+    const r = await api?.driverInstall();
+    if (r && r.error === 'ELEVATION_REQUIRED') setIsAdmin(false);
+  };
+  const doUninstall = async () => { await api?.driverUninstall(); };
+  const doReload = async () => { await api?.driverReload(); };
+
+  const saveBackupIPC = async (name:string) => { await api?.saveBackup(name, { gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active, retired: st.retired }); };
+  const loadBackupIPC = async (name:string) => {
+    const cfg = await api?.loadBackup(name);
+    if (cfg) setSt(s => ({ ...s, ...cfg, selectedBackup: name }));
+  };
+  const deleteBackupIPC = async (name:string) => { await api?.deleteBackup(name); setSt(s => ({ ...s, backups: s.backups.filter(b=>b!==name), selectedBackup: s.backups[0]||'' })); };
+
+  // === local backup helpers (still using localStorage UI) ===
   const saveBackup = (name: string) => {
     const nm = (name||"").trim() || "Default";
     localStorage.setItem(k("backup", nm), JSON.stringify(st));
@@ -182,6 +230,7 @@ export default function App(){
     localStorage.setItem(k("backups"), JSON.stringify(backups));
     setSt({ ...st, backups, selectedBackup: backups[0]||"" });
   };
+
   const downloadConfigsZip = () => {
     const { adapter, option, xml } = toFiles(st);
     downloadZip("configs.zip", [
@@ -191,16 +240,12 @@ export default function App(){
     ]);
   };
 
-  const toggleInstall = () => {
-    if(st.driverState === "not-detected") setSt({...st, driverState: "running"});
-    else if(st.driverState === "stopped") setSt({...st, driverState: "running"});
-    else setSt({...st, driverState: "not-detected"});
-  };
+  // Pause/Resume remains local UI state
   const togglePauseStop = () => {
     if(st.driverState === "running") setSt({...st, driverState: "stopped"});
     else if(st.driverState === "stopped") setSt({...st, driverState: "running"});
   };
-  const reloadDriver = () => { setSt({...st, driverState: "running"}); };
+
   const signOut = () => { fetch('/api/logout', { method: 'POST' }).finally(()=> location.reload()); };
 
   const labelPause = st.driverState === "running" ? "Pause" : "Resume";
@@ -231,6 +276,16 @@ export default function App(){
           </div>
         </div>
       </div>
+
+      {/* (d) Needs Admin banner */}
+      {!isAdmin && (
+        <div className="max-w-6xl mx-auto px-6">
+          <div className="mb-4 px-3 py-2 rounded-lg border border-yellow-400/40 bg-yellow-200/10 text-sm">
+            ⚠️ Some actions need Administrator rights. <button onClick={relaunchAdmin} className="underline">Relaunch as Admin</button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-4">
         <div className="space-y-4">
           <Card title="Driver">
@@ -244,9 +299,10 @@ export default function App(){
                   <div className="text-sm text-right" style={{ color: accentText }}>{labelPause}</div>
                   <div className="text-sm text-right" style={{ color: accentText }}>{labelReload}</div>
                   <div className="text-sm text-right" style={{ color: accentText }}>{labelInstall}</div>
+                  {/* (c) Real handlers */}
                   <div className="flex justify-end"><button onClick={togglePauseStop} className="px-3 py-1.5 rounded-xl text-sm border border-white/30 hover:bg-white/10" style={{ color: accentText }}>{st.driverState==="running"?"🛑":"▶️"}</button></div>
-                  <div className="flex justify-end"><button onClick={reloadDriver} className="px-3 py-1.5 rounded-xl text-sm border border-white/30 hover:bg-white/10" style={{ color: accentText }}>🔄️</button></div>
-                  <div className="flex justify-end"><button onClick={toggleInstall} className="px-3 py-1.5 rounded-xl text-sm border border-white/30 hover:bg-white/10" style={{ color: accentText }}>{st.driverState==="not-detected"?"🚀":"🗑️"}</button></div>
+                  <div className="flex justify-end"><button onClick={doReload} className="px-3 py-1.5 rounded-xl text-sm border border-white/30 hover:bg-white/10" style={{ color: accentText }}>🔄️</button></div>
+                  <div className="flex justify-end"><button onClick={() => (st.driverState==="not-detected" ? doInstall() : doUninstall())} className="px-3 py-1.5 rounded-xl text-sm border border-white/30 hover:bg-white/10" style={{ color: accentText }}>{st.driverState==="not-detected"?"🚀":"🗑️"}</button></div>
                 </div>
               </div>
             </div>
@@ -272,7 +328,10 @@ export default function App(){
         </div>
         <div className="space-y-4">
           <Card title="Log">
-            <div className="h-28 overflow-auto rounded border border-white/10 p-2 text-xs" style={{ background: tableBg, color: tableText }}>—</div>
+            {/* (e) Live log */}
+            <div className="h-28 overflow-auto rounded border border-white/10 p-2 text-xs" style={{ background: tableBg, color: tableText }}>
+              {logLines.length ? logLines.map((l,i)=><div key={i}>{l}</div>) : '—'}
+            </div>
           </Card>
           <Card title="GPU & Monitors">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
@@ -280,7 +339,7 @@ export default function App(){
                 <label className="min-w-[44px]" style={{ color: accentText }}>GPU</label>
                 <select className="rounded px-2 py-1 flex-1" style={{ color: accentText }} value={st.gpuName} onChange={e=>setSt({...st, gpuName:e.target.value})}>
                   <option value="(Select GPU)">(Select GPU)</option>
-                  {["NVIDIA GeForce","AMD Radeon","Intel Arc"].map(g=> <option key={g} value={g}>{g}</option>)}
+                  {gpuList.map((g:string)=> <option key={g} value={g}>{g}</option>)}
                 </select>
               </div>
               <div className="flex items-center gap-2">
@@ -337,6 +396,8 @@ function Card(p:{ title:string, children:React.ReactNode }){
   );
 }
 
+function RowBar(p:{ children:React.ReactNode }){ return <div className="flex flex-wrap items-center gap-2">{p.children}</div>; }
+
 function GhostBtn(p:{ children:React.ReactNode, onClick?:()=>void, danger?:boolean }){
   return <button onClick={p.onClick} className={`px-3 py-1.5 rounded-xl text-sm border ${p.danger? 'border-red-400 hover:bg-red-500/25' : 'border-white/30 hover:bg-white/10'}`} style={{ color: p.danger? undefined : accentText }}>{p.children}</button>
 }
@@ -357,7 +418,6 @@ function NumberSpinner(p:{ value:number, min?:number, max?:number, onChange:(v:n
   )
 }
 
-// --- ResTable + tiny cells (inline so TS finds it) ---
 function ResTable(p:{ title:string, rows: Row[], onChange:(r:Row[])=>void, onMove:(ids:string[])=>void, side:'left'|'right', mode:'disabled'|'active' }){
   const [selected, setSelected] = useState<string[]>([]);
   const toggleSel = (id:string)=> setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id]);

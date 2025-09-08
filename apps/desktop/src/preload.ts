@@ -1,29 +1,31 @@
 // apps/desktop/src/preload.ts
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron';
 
-contextBridge.exposeInMainWorld('vdisplay', {
-  version: '0.1.0',
+type Row = { id:string; w:number; h:number; hz:number };
+type Config = { gpuName:string; monitorCount:number; active:Row[]; retired:Row[] };
+type InitResult = { isAdmin:boolean; gpus:string[]; config:Config; backups:string[]; driverState:'not-detected'|'stopped'|'running'; log:string[] };
 
-  isAdmin: () => ipcRenderer.invoke('admin:is-elevated'),
-  relaunchAsAdmin: () => ipcRenderer.invoke('admin:relaunch'),
+const api = {
+  init: (): Promise<InitResult> => ipcRenderer.invoke('vdisplay:init'),
+  onLog: (fn: (line:string)=>void) => ipcRenderer.on('vdisplay:log', (_e, line)=> fn(line)),
+  saveConfig: (cfg:Config) => ipcRenderer.invoke('vdisplay:saveConfig', cfg),
 
-  listGpus: () => ipcRenderer.invoke('gpus:list'),
+  listGpus: () => ipcRenderer.invoke('vdisplay:listGpus'),
 
-  loadConfig: () => ipcRenderer.invoke('config:load'),
-  saveConfig: (payload: any) => ipcRenderer.invoke('config:save', payload),
+  listBackups: () => ipcRenderer.invoke('vdisplay:backups:list'),
+  saveBackup: (name:string, cfg:Config) => ipcRenderer.invoke('vdisplay:backups:save', name, cfg),
+  loadBackup: (name:string) => ipcRenderer.invoke('vdisplay:backups:load', name),
+  deleteBackup: (name:string) => ipcRenderer.invoke('vdisplay:backups:delete', name),
 
-  listBackups: () => ipcRenderer.invoke('backups:list'),
-  saveBackup: (name: string, payload: any) => ipcRenderer.invoke('backups:save', name, payload),
-  loadBackup: (name: string) => ipcRenderer.invoke('backups:load', name),
-  deleteBackup: (name: string) => ipcRenderer.invoke('backups:delete', name),
+  driverInstall: () => ipcRenderer.invoke('vdisplay:driver:install'),
+  driverUninstall: () => ipcRenderer.invoke('vdisplay:driver:uninstall'),
+  driverReload: () => ipcRenderer.invoke('vdisplay:driver:reload'),
+  ensureDriverPkg: () => ipcRenderer.invoke('vdisplay:driver:ensurePkg'),
 
-  driverInstall: () => ipcRenderer.invoke('driver:install'),
-  driverUninstall: () => ipcRenderer.invoke('driver:uninstall'),
-  driverReload: () => ipcRenderer.invoke('driver:reload'),
+  isAdmin: () => ipcRenderer.invoke('vdisplay:admin:check'),
+  relaunchAsAdmin: () => ipcRenderer.invoke('vdisplay:admin:relaunch'),
+};
 
-  onLog: (cb: (line:string)=>void) => {
-    const ch = (_:any, line:string)=> cb(line)
-    ipcRenderer.on('log:append', ch)
-    return () => ipcRenderer.removeListener('log:append', ch)
-  },
-})
+contextBridge.exposeInMainWorld('vdisplay', api);
+
+export type RendererApi = typeof api;

@@ -20,10 +20,7 @@
       { "from": "bin", "to": "bin" }
     ],
     "directories": { "output": "release" },
-    "win": {
-      "target": "portable",
-      "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}"
-    },
+    "win": { "target": "portable", "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}" },
     "electronVersion": "31.7.7"
   },
 
