@@ -1,4 +1,5 @@
 {
+  "//": "// apps/desktop/package.json",
   "build": {
     "appId": "com.precisionplanit.vdisplay",
     "asar": true,

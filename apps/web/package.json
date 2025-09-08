@@ -1,4 +1,5 @@
 {
+  "//": "// apps/web/package.json",
   "name": "@vdisplay/web",
   "version": "0.1.0",
   "private": true,

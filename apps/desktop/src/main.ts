@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, dialog } from 'electron'
+// apps/desktop/src/main.ts
+import { app, BrowserWindow, dialog } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 
@@ -16,7 +17,7 @@ function createWindow() {
   if (isDev) {
     w.loadURL('http://localhost:5173')
   } else {
-    const htmlPath = path.join(__dirname, 'ui', 'index.html') // now inside app.asar
+    const htmlPath = path.join(process.resourcesPath, 'ui', 'index.html') // <-- extraResources location
     if (!fs.existsSync(htmlPath)) {
       dialog.showErrorBox('UI not found', `Expected ${htmlPath}`)
     } else {
@@ -28,3 +29,9 @@ function createWindow() {
   w.on('closed', () => { if (win === w) win = null })
   win = w
 }
+
+// Add this so the window is actually created
+app.whenReady().then(createWindow)
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+// Optional: quit on Windows when all windows closed
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

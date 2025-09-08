@@ -1,5 +1,6 @@
-// .vscode/launch.json (optional helper)
+
 {
+    "//": "// .vscode/launch.json (optional helper)",
     "version": "0.2.0",
     "configurations": [
       {
