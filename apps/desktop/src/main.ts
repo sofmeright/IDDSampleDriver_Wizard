@@ -3,8 +3,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } f
 import path from 'node:path';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import { spawn } from 'node:child_process';
-import os from 'node:os';
+import { spawn, execFile } from 'node:child_process';
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -54,7 +53,8 @@ function ps(command: string) {
 function cmd(command: string) {
   // Run CMD and capture output
   return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
-    const child = spawn('cmd.exe', ['/d','/s','/c', command], { windowsHide: true });
+    // NOTE: omit '/s' to avoid odd quoting behavior
+    const child = spawn('cmd.exe', ['/d','/c', command], { windowsHide: true });
     let stdout = '', stderr = '';
     child.stdout.on('data', d => stdout += d.toString());
     child.stderr.on('data', d => stderr += d.toString());
@@ -62,14 +62,32 @@ function cmd(command: string) {
   });
 }
 
-function runExe(file: string, args: string[]) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    execFile(file, args, { windowsHide: true }, (error, stdout, stderr) => {
-      const code = (error as any)?.code ?? 0;
+// robust runner with timeout + cwd
+function runExe(
+  file: string,
+  args: string[],
+  opts?: { timeoutMs?: number; cwd?: string }
+) {
+  return new Promise<{ code: number | string; stdout: string; stderr: string }>((resolve) => {
+    const timeout = opts?.timeoutMs ?? 15000; // default 15s
+    execFile(file, args, { windowsHide: true, timeout, cwd: opts?.cwd }, (error, stdout, stderr) => {
+      let code: number | string = 0;
+      if (error && (error as any).code !== undefined) code = (error as any).code; // numeric or 'ETIMEDOUT'/'ENOENT'
       resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
   });
 }
+
+// Prefer an absolute pnputil.exe to avoid PATH/bitness surprises
+const PNPUTIL = (() => {
+  const sysRoot = process.env['SystemRoot'] || 'C:\\Windows';
+  // If running 32-bit on 64-bit Windows, System32 is redirected; Sysnative bypasses that.
+  const sysnative = path.join(sysRoot, 'Sysnative', 'pnputil.exe');
+  const system32  = path.join(sysRoot, 'System32',  'pnputil.exe');
+  if (exists(system32)) return system32;
+  if (exists(sysnative)) return sysnative;
+  return 'pnputil.exe';
+})();
 
 async function isAdmin(): Promise<boolean> {
   const { stdout } = await ps('([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)');
@@ -282,23 +300,30 @@ async function driverInstall(): Promise<void> {
   const ok = await ensureDriverPackage();
   if (!ok) throw new Error('DRIVER_DOWNLOAD_FAILED');
 
+  // breadcrumbs
+  log(`resourcesPath=${process.resourcesPath}`);
+  log(`BIN_DIR=${BIN_DIR}`);
+  log(`DRIVER_INF=${DRIVER_INF}`);
+
   const nef = nefconwPath();
   if (nef) {
+    log(`Attempting device-node create via nefconw: ${nef}`);
     const r = await runExe(nef, [
       '--create-device-node',
       '--hardware-id', HARDWARE_ID,
       '--class-name', 'Display',
       '--class-guid', CLASS_GUID
-    ]);
-    log(`nefconw create-device-node: ${r.code}`);
+    ], { timeoutMs: 7000, cwd: path.dirname(nef) });
+    log(`nefconw create-device-node -> code=${r.code}`);
     if (r.stdout.trim()) log(r.stdout.trim());
     if (r.stderr.trim()) log(r.stderr.trim());
   } else {
     log('nefconw.exe not found; skipping device-node creation');
   }
 
-  const add = await runExe('pnputil', ['/add-driver', DRIVER_INF, '/install']);
-  log(`pnputil add-driver: ${add.code}`);
+  log('Calling pnputil /add-driver ...');
+  const add = await runExe(PNPUTIL, ['/add-driver', DRIVER_INF, '/install'], { timeoutMs: 30000 });
+  log(`pnputil add-driver -> code=${add.code}`);
   if (add.stdout.trim()) log(add.stdout.trim());
   if (add.stderr.trim()) log(add.stderr.trim());
 }
@@ -308,13 +333,15 @@ async function driverUninstall(): Promise<void> {
   if (!(await isAdmin())) { log('Admin required for uninstall'); throw new Error('ELEVATION_REQUIRED'); }
   const inf = await getInfName();
   if (inf) {
-    const del = await runExe('pnputil', ['/delete-driver', inf, '/uninstall', '/force']);
-    log(`pnputil delete-driver: ${del.code}`);
+    log(`Calling pnputil /delete-driver ${inf} ...`);
+    const del = await runExe(PNPUTIL, ['/delete-driver', inf, '/uninstall', '/force'], { timeoutMs: 30000 });
+    log(`pnputil delete-driver -> code=${del.code}`);
     if (del.stdout.trim()) log(del.stdout.trim());
     if (del.stderr.trim()) log(del.stderr.trim());
   }
-  const rem = await runExe('pnputil', ['/remove-device', '/deviceid', HARDWARE_ID]);
-  log(`pnputil remove-device: ${rem.code}`);
+  log('Calling pnputil /remove-device ...');
+  const rem = await runExe(PNPUTIL, ['/remove-device', '/deviceid', HARDWARE_ID], { timeoutMs: 15000 });
+  log(`pnputil remove-device -> code=${rem.code}`);
   if (rem.stdout.trim()) log(rem.stdout.trim());
   if (rem.stderr.trim()) log(rem.stderr.trim());
 }
@@ -322,8 +349,9 @@ async function driverUninstall(): Promise<void> {
 async function driverReload(): Promise<void> {
   log('Driver reload requested');
   if (!(await isAdmin())) { log('Admin required for reload'); throw new Error('ELEVATION_REQUIRED'); }
-  const r = await runExe('pnputil', ['/restart-device', '/deviceid', HARDWARE_ID]);
-  log(`pnputil restart-device: ${r.code}`);
+  log('Calling pnputil /restart-device ...');
+  const r = await runExe(PNPUTIL, ['/restart-device', '/deviceid', HARDWARE_ID], { timeoutMs: 15000 });
+  log(`pnputil restart-device -> code=${r.code}`);
   if (r.stdout.trim()) log(r.stdout.trim());
   if (r.stderr.trim()) log(r.stderr.trim());
 }
