@@ -443,7 +443,7 @@ async function getVddRunState(): Promise<'not-detected'|'stopped'|'running'> {
   return state;
 }
 
-// --- driver management (new) ---
+// --- nefconw integration ----------------------------------------------------
 function nefconwPath() {
   const p = path.join(BIN_DIR, 'nefconw.exe');
   const present = exists(p);
@@ -451,6 +451,63 @@ function nefconwPath() {
   return present ? p : null;
 }
 
+/**
+ * Tries to create/bring up the Root\MTTVDD device using nefconw.exe.
+ * We don't rely on deprecated devcon/wmic. We try a few common verbs and
+ * re-check presence after each attempt.
+ */
+async function ensureDeviceViaNef(timeoutMs = 20000): Promise<boolean> {
+  const nef = nefconwPath();
+  if (!nef) { log('nefconw.exe not found — skipping nefconw device bring-up.'); return false; }
+
+  // If already present, nothing to do.
+  if ((await getVddInstanceIds()).length) return true;
+
+  // Capture help to the log (useful to see supported verbs on user’s build)
+  const helpTries: string[][] = [['/?'], ['--help'], ['-h']];
+  for (const args of helpTries) {
+    const r = await runExe(nef, args, { timeoutMs });
+    if ((r.stdout || r.stderr).trim()) {
+      const txt = (r.stdout || r.stderr).trim().split(/\r?\n/).slice(0, 20).join('\n');
+      log(`nefconw help (${args.join(' ')}) first-lines:\n${txt}`);
+      if (r.code === 0 || txt.length) break;
+    }
+  }
+
+  // Candidate verbs (with and without HWID); harmless if unsupported — we'll log and move on.
+  const candidates: string[][] = [
+    ['install'],
+    ['/install'],
+    ['-install'],
+    ['adddevice'],
+    ['/adddevice'],
+    ['create'],
+    ['/create'],
+    ['install', VDD_HARDWARE_ID],
+    ['/install', VDD_HARDWARE_ID],
+    ['adddevice', VDD_HARDWARE_ID],
+    ['/adddevice', VDD_HARDWARE_ID],
+    ['create', VDD_HARDWARE_ID],
+    ['/create', VDD_HARDWARE_ID],
+  ];
+
+  for (const args of candidates) {
+    const r = await runExe(nef, args, { timeoutMs });
+    if (r.stdout.trim()) log(r.stdout.trim());
+    if (r.stderr.trim()) log(r.stderr.trim());
+    const after = await getVddInstanceIds();
+    if (after.length) {
+      log(`nefconw succeeded with: ${args.join(' ')}`);
+      return true;
+    }
+  }
+
+  log('nefconw did not create a Root\\MTTVDD device — it may require a different verb or a reboot.');
+  return false;
+}
+// ---------------------------------------------------------------------------
+
+// --- driver management (new) ---
 async function driverInstall(): Promise<void> {
   log('Driver install requested');
   log(`resourcesPath=${process.resourcesPath}`);
@@ -463,16 +520,16 @@ async function driverInstall(): Promise<void> {
 
   await ensureRegistryOverrides();
 
-  const nef = nefconwPath();
-  if (nef) log(`nefconw present at ${nef} (not required for this driver)`);
-
-  log('Calling pnputil /add-driver ...');
+  // 1) Make sure the package is in the Driver Store
   const added = await pnputilAttempt('pnputil add-driver', [
     ['/add-driver', DRIVER_INF, '/install']
   ], 60000);
   if (!added) throw new Error('PNPUTIL_ADD_DRIVER_FAILED');
 
-  // After install, log state
+  // 2) Ensure device node exists via nefconw (no devcon/wmic usage)
+  await ensureDeviceViaNef();
+
+  // 3) Report state
   await getVddRunState();
 }
 
@@ -493,21 +550,9 @@ async function driverUninstall(): Promise<void> {
   // 2) Delete the installed package with Original Name: MttVDD.inf
   const { published } = await findPublishedInf();
   if (published) {
-    const deleted = await pnputilAttempt(`pnputil delete-driver ${published}`, [
+    await pnputilAttempt(`pnputil delete-driver ${published}`, [
       ['/delete-driver', published, '/uninstall', '/force']
     ], 60000);
-
-    if (!deleted) {
-      // If deletion failed because a device reappeared, try removing devices again
-      const again = await getVddInstanceIds();
-      for (const id of again) {
-        await pnputilAttempt(`retry remove-device (${id})`, [
-          ['/remove-device', '/instanceid', id],
-          ['/remove-device', '/deviceid', id],
-          ['/remove-device', id]
-        ], 20000);
-      }
-    }
   } else {
     log('No installed MttVDD.inf package found in driver store.');
   }
@@ -522,10 +567,15 @@ async function driverReload(): Promise<void> {
 
   const ids = await getVddInstanceIds();
   if (!ids.length) {
-    log('No Root\\MttVDD device instances found to restart (is it installed and enabled?)');
+    // Try to create it via nefconw if missing
+    await ensureDeviceViaNef();
+  }
+  const afterIds = await getVddInstanceIds();
+  if (!afterIds.length) {
+    log('No Root\\MTTVDD device instances found to restart (is it installed and enabled?)');
     return;
   }
-  for (const id of ids) {
+  for (const id of afterIds) {
     await pnputilAttempt(`pnputil restart-device (${id})`, [
       ['/restart-device', '/instanceid', id],
       ['/restart-device', '/deviceid', id],
@@ -549,7 +599,7 @@ async function driverDisable(): Promise<void> {
   if (!blanket) {
     // Fallback: disable per-instance
     const ids = await getVddInstanceIds();
-    if (!ids.length) { log('No Root\\MttVDD instances found to disable'); return; }
+    if (!ids.length) { log('No Root\\MTTVDD instances found to disable'); return; }
     for (const id of ids) {
       await pnputilAttempt(`pnputil disable-device (${id})`, [
         ['/disable-device', '/instanceid', id],
@@ -567,6 +617,9 @@ async function driverEnable(): Promise<void> {
   log('Driver enable requested');
   if (!(await isAdmin())) { log('Admin required for enable'); throw new Error('ELEVATION_REQUIRED'); }
 
+  // Try to ensure the device exists first (no-ops if already present)
+  await ensureDeviceViaNef();
+
   // Blanket enable by hardware ID
   const blanket = await pnputilAttempt('pnputil enable-device (by hardware-id)', [
     ['/enable-device', '/deviceid', VDD_HARDWARE_ID]
@@ -575,7 +628,7 @@ async function driverEnable(): Promise<void> {
   if (!blanket) {
     // Fallback: enable per-instance
     const ids = await getVddInstanceIds();
-    if (!ids.length) { log('No Root\\MttVDD instances found to enable'); return; }
+    if (!ids.length) { log('No Root\\MTTVDD instances found to enable'); return; }
     for (const id of ids) {
       await pnputilAttempt(`pnputil enable-device (${id})`, [
         ['/enable-device', '/instanceid', id],
