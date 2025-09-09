@@ -126,8 +126,8 @@ function ps(command: string) {
   return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], { windowsHide: true });
     let stdout = '', stderr = '';
-    child.stdout.on 'data', d => stdout += d.toString();
-    child.stderr.on 'data', d => stderr += d.toString();
+    child.stdout.on('data', d => stdout += d.toString());
+    child.stderr.on('data', d => stderr += d.toString());
     child.on('close', code => resolve({ code: code ?? 0, stdout, stderr }));
   });
 }
