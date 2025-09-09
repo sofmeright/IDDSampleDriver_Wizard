@@ -16,23 +16,21 @@ const UI_INDEX = path.join(RES_UI, 'index.html');
 const USERDATA = app.getPath('userData');
 const BACKUPS = path.join(USERDATA, 'Backups'); // vdd_settings.xml.<name>.backup etc.
 
-// Official location & filenames for Virtual Display Driver
 const SYS_DIR = 'C:\\VirtualDisplayDriver';
 const DRIVER_INF = path.join(SYS_DIR, 'MttVDD.inf');
 const DEFAULT_XML = path.join(SYS_DIR, 'vdd_settings.xml');
 
-// Optional bundle location for nefconw.exe
 const BIN_DIR = path.join(process.resourcesPath, 'bin');
 
-// DEFAULT fallbacks (will be overwritten by INF parsing)
+// Will be filled by INF parse
 let INF_META = {
   hwid: 'Root\\MTTVDD',
   className: 'Display',
   classGuid: '{4d36e968-e325-11ce-bfc1-08002be10318}', // Display class GUID
+  serviceName: 'MttVDD',
 };
 let infMetaLoaded = false;
 
-// Prefer an absolute pnputil.exe to avoid PATH/bitness surprises
 const PNPUTIL = (() => {
   const sysRoot = process.env['SystemRoot'] || 'C:\\Windows';
   const system32 = path.join(sysRoot, 'System32', 'pnputil.exe');
@@ -52,80 +50,34 @@ function log(line: string) {
   win?.webContents.send('vdisplay:log', s);
 }
 
-// --- tiny helpers ---
-function exists(p: string) {
-  try { fs.accessSync(p); return true; } catch { return false; }
-}
+// --- helpers ---
+function exists(p: string) { try { fs.accessSync(p); return true; } catch { return false; } }
 async function ensureDir(p: string) { await fsp.mkdir(p, { recursive: true }); }
-function escPS(s: string) { return s.replace(/'/g, "''"); } // single-quote for PS strings
-function canonHwid(hwid: string) {
-  // Normalize "root\X" casing and slashes
-  return hwid.replace(/^root\\/i, 'Root\\');
-}
+function escPS(s: string) { return s.replace(/'/g, "''"); }
+function canonHwid(hwid: string) { return hwid.replace(/^root\\/i, 'Root\\'); }
 
-// ---------- ICON HELPERS (tray + window) ----------
-function resolveTrayIconPath(): string {
-  // Packaged: electron-builder copies to resources/icons
-  const prod = path.join(process.resourcesPath, 'icons');
+function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
 
-  // Dev fallbacks
-  const dev1 = path.join(__dirname, '..', 'assets', 'icons'); // dist/main.cjs -> ../assets/icons
-  const dev2 = path.join(process.cwd(), 'apps', 'desktop', 'assets', 'icons');
-
-  const pick = (...cands: string[]) => cands.find(p => exists(p)) || cands[0];
-
-  if (process.platform === 'win32') {
-    const p = pick(
-      path.join(prod, 'tray.ico'),
-      path.join(dev1, 'tray.ico'),
-      path.join(dev2, 'tray.ico'),
-    );
-    return p;
-  } else if (process.platform === 'darwin') {
-    // template image for correct tinting
-    return pick(
-      path.join(prod, 'trayTemplate.png'),
-      path.join(dev1, 'trayTemplate.png'),
-      path.join(dev2, 'trayTemplate.png'),
-    );
-  } else {
-    // linux
-    return pick(
-      path.join(prod, 'tray.png'),
-      path.join(dev1, 'tray.png'),
-      path.join(dev2, 'tray.png'),
-    );
+async function waitFor<T>(fn: () => Promise<T>, test: (v: T) => boolean, label: string, timeoutMs = 10000, intervalMs = 400) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const v = await fn();
+    if (test(v)) return v;
+    await sleep(intervalMs);
   }
+  log(`${label} timed out after ${timeoutMs}ms`);
+  return fn();
 }
 
-function resolveWindowIconPath(): string | undefined {
-  const prod = path.join(process.resourcesPath, 'icons');
-  const dev1 = path.join(__dirname, '..', 'assets', 'icons');
-  const dev2 = path.join(process.cwd(), 'apps', 'desktop', 'assets', 'icons');
-
-  const pick = (...cands: string[]) => cands.find(p => exists(p));
-
-  if (process.platform === 'win32') {
-    return pick(
-      path.join(prod, 'app.ico'),
-      path.join(dev1, 'app.ico'),
-      path.join(dev2, 'app.ico'),
-    );
-  } else if (process.platform === 'darwin') {
-    // BrowserWindow ignores icon on mac; return undefined
-    return undefined;
-  } else {
-    // linux
-    return pick(
-      path.join(prod, 'app.png'),
-      path.join(dev1, 'app.png'),
-      path.join(dev2, 'app.png'),
-    );
-  }
+// Log a short preview of stdout/stderr from runExe
+function logExeOutput(tag: string, out: { stdout: string; stderr: string }) {
+  const s = out.stdout?.trim();
+  const e = out.stderr?.trim();
+  if (s) log(`${tag} stdout: ${s.length > 800 ? s.slice(0, 800) + '…' : s}`);
+  if (e) log(`${tag} stderr: ${e.length > 800 ? e.slice(0, 800) + '…' : e}`);
 }
-// ---------------------------------------------------
 
-// PowerShell runner
+// PowerShell
 function ps(command: string) {
   return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], { windowsHide: true });
@@ -158,7 +110,7 @@ function runExe(file: string, args: string[], opts?: { timeoutMs?: number, cwd?:
   });
 }
 
-// Try multiple pnputil arg permutations, logging each, stop on first success (code 0)
+// pnputil attempt helper
 async function pnputilAttempt(label: string, argSets: string[][], timeoutMs = 30000): Promise<boolean> {
   for (const args of argSets) {
     const r = await runExe(PNPUTIL, args, { timeoutMs });
@@ -170,28 +122,31 @@ async function pnputilAttempt(label: string, argSets: string[][], timeoutMs = 30
   return false;
 }
 
-// --- INF parsing (discover HWID/Class/ClassGuid) ---
+// --- INF parsing: HWID, Class, ClassGuid, Service ---
 async function ensureInfMeta() {
   if (infMetaLoaded) return INF_META;
   try {
     if (exists(DRIVER_INF)) {
       const txt = await fsp.readFile(DRIVER_INF, 'utf8');
 
-      // Class
       const mClass = txt.match(/^\s*Class\s*=\s*([^\r\n#;]+)/im);
       if (mClass?.[1]) INF_META.className = mClass[1].trim();
 
-      // ClassGuid
       const mGuid = txt.match(/^\s*ClassGuid\s*=\s*({[^}]+})/im);
       if (mGuid?.[1]) INF_META.classGuid = mGuid[1].trim();
 
-      // Hardware ID: look for lines like "... = InstallSection, Root\MTTVDD"
+      // Any line ending with ", Root\Something"
       const lines = txt.split(/\r?\n/);
       for (const line of lines) {
         const m = line.match(/,\s*(Root\\[A-Za-z0-9_\\\-.]+)/i);
         if (m?.[1]) { INF_META.hwid = canonHwid(m[1]); break; }
       }
-      log(`INF meta: hwid=${INF_META.hwid} class=${INF_META.className} guid=${INF_META.classGuid}`);
+
+      // Try to capture AddService=ServiceName
+      const mSvc = txt.match(/^\s*AddService\s*=\s*([^\s,;#]+)/im);
+      if (mSvc?.[1]) INF_META.serviceName = mSvc[1].trim();
+
+      log(`INF meta: hwid=${INF_META.hwid} class=${INF_META.className} guid=${INF_META.classGuid} service=${INF_META.serviceName}`);
     } else {
       log(`INF not found at ${DRIVER_INF} — using defaults.`);
     }
@@ -203,14 +158,13 @@ async function ensureInfMeta() {
   return INF_META;
 }
 
-// --- admin helpers ---
+// --- Admin ---
 async function isAdmin(): Promise<boolean> {
   const { stdout } = await ps('([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)');
   const res = /True/i.test(stdout.trim());
   log(`isAdmin=${res}`);
   return res;
 }
-
 async function relaunchAsAdmin() {
   const exe = process.execPath.replace(/"/g, '`"');
   const args = process.argv.slice(1).map(a => a.replace(/"/g, '`"')).join(' ');
@@ -220,7 +174,7 @@ async function relaunchAsAdmin() {
   app.quit();
 }
 
-// --- GPU list ---
+// --- GPU list (unchanged) ---
 async function listGpus(): Promise<string[]> {
   const { stdout, stderr, code } = await ps(`Get-CimInstance -ClassName Win32_VideoController | Select-Object -ExpandProperty Name`);
   if (stderr.trim()) log(`listGpus stderr: ${stderr.trim()}`);
@@ -232,7 +186,7 @@ async function listGpus(): Promise<string[]> {
   return out;
 }
 
-// --- config model & XML I/O (supports new <global> & <options>) ---
+// --- config model & XML I/O ---
 type Row = { id: string; w: number; h: number; hz: number };
 type AppConfig = { gpuName: string; monitorCount: number; active: Row[]; retired: Row[] };
 
@@ -277,7 +231,7 @@ function toFilesFromState(s: AppConfig) {
   xml += `  <resolutions>\n`;
   for (const g of groups.values()) {
     xml += `    <resolution>\n      <width>${g.w}</width>\n      <height>${g.h}</height>\n`;
-    for (const hz of g.hz) xml += `      <refresh_rate>${hz}</refresh_rate>\n`;
+      for (const hz of g.hz) xml += `      <refresh_rate>${hz}</refresh_rate>\n`;
     xml += `    </resolution>\n`;
   }
   xml += `  </resolutions>\n`;
@@ -301,7 +255,6 @@ async function loadSystemConfig(): Promise<AppConfig> {
   log(`Using default config: ${JSON.stringify(def)}`);
   return def;
 }
-
 async function writeSystemConfig(cfg: AppConfig) {
   await ensureDir(SYS_DIR);
   const { xml } = toFilesFromState(cfg);
@@ -309,7 +262,7 @@ async function writeSystemConfig(cfg: AppConfig) {
   log(`Wrote config to ${SYS_DIR}`);
 }
 
-// --- backups (XML only) ---
+// --- backups ---
 async function listBackups(): Promise<string[]> {
   await ensureDir(BACKUPS);
   const files = await fsp.readdir(BACKUPS);
@@ -343,7 +296,7 @@ async function deleteBackup(name: string) {
   log(`Deleted backup "${name}"`);
 }
 
-// --- driver package bootstrap (C:\VirtualDisplayDriver) ---
+// --- driver package bootstrap (download/stage) ---
 async function ensureDriverHome(): Promise<boolean> {
   try {
     if (exists(DRIVER_INF)) {
@@ -358,7 +311,6 @@ async function ensureDriverHome(): Promise<boolean> {
     const zip = path.join(tmpDir, 'VirtualDisplayDriver.zip').replace(/\\/g, '/');
     const url = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip'.replace(/"/g, '`"');
 
-    // Download + extract to temp
     const dl = `Invoke-WebRequest -UseBasicParsing -OutFile "${zip}" -Uri "${url}"`;
     const ex = `Expand-Archive -LiteralPath "${zip}" -DestinationPath "${tmpDir}" -Force`;
     const srcA = path.join(tmpDir, 'VirtualDisplayDriver', '*').replace(/\\/g, '/');
@@ -379,7 +331,7 @@ async function ensureDriverHome(): Promise<boolean> {
   }
 }
 
-// Registry override (where to read vdd_settings.xml)
+// Registry override so driver finds vdd_settings.xml
 async function ensureRegistryOverrides() {
   const script = `
     $path = 'HKLM:\\SOFTWARE\\MikeTheTech\\VirtualDisplayDriver';
@@ -391,7 +343,7 @@ async function ensureRegistryOverrides() {
   else log('Registry override set: HKLM\\SOFTWARE\\MikeTheTech\\VirtualDisplayDriver\\VDDPATH');
 }
 
-// Returns {published?: 'oem76.inf'}
+// enum-drivers -> published name for our INF
 async function findPublishedInf(): Promise<{ published?: string }> {
   const r = await runExe(PNPUTIL, ['/enum-drivers'], { timeoutMs: 30000 });
   const text = `${r.stdout}\n${r.stderr}`;
@@ -410,29 +362,19 @@ async function findPublishedInf(): Promise<{ published?: string }> {
   return {};
 }
 
-// Prefer PNPDeviceID match via CIM; fallback to Display class friendly name
+// --- detection helpers ---
+// Prefer CIM PNPDeviceID startsWith parsed HWID; fallback lookups if needed
 async function getVddInstanceIds(): Promise<string[]> {
   await ensureInfMeta();
-  const HWID = canonHwid(INF_META.hwid);
-  const HWID_UP = HWID.toUpperCase();
-  const filterPrefix = HWID_UP.replace(/\\/g, '\\\\'); // for PS LIKE
+  const HWID_UP = canonHwid(INF_META.hwid).toUpperCase();
 
   const script = `
     $ids = @()
-
     try {
       $ids = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
-        Where-Object { $_.PNPDeviceID.ToUpper().StartsWith('${escPS(HWID_UP)}') } |
+        Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID.ToUpper().StartsWith('${escPS(HWID_UP)}') } |
         Select-Object -ExpandProperty PNPDeviceID
     } catch { }
-
-    if (-not $ids -or $ids.Count -eq 0) {
-      try {
-        $ids = Get-PnpDevice -Class ${escPS(INF_META.className)} -ErrorAction SilentlyContinue |
-          Where-Object { $_.FriendlyName -match 'Virtual\\s*Display' } |
-          Select-Object -ExpandProperty InstanceId
-      } catch { }
-    }
 
     $ids | Select-Object -Unique | ConvertTo-Json -Compress
   `;
@@ -451,32 +393,21 @@ async function getVddInstanceIds(): Promise<string[]> {
   }
 }
 
-// Real run-state based on PnP presence + ConfigManagerErrorCode (22 = disabled)
-async function getVddRunState(): Promise<'not-detected' | 'stopped' | 'running'> {
+// run-state via ConfigManagerErrorCode (22=disabled)
+async function getVddRunState(): Promise<'not-detected'|'stopped'|'running'> {
   await ensureInfMeta();
-  const HWID = canonHwid(INF_META.hwid);
-  const HWID_UP = HWID.toUpperCase();
+  const HWID_UP = canonHwid(INF_META.hwid).toUpperCase();
 
   const script = `
     try {
       $devs = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
-        Where-Object { $_.PNPDeviceID.ToUpper().StartsWith('${escPS(HWID_UP)}') } |
+        Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID.ToUpper().StartsWith('${escPS(HWID_UP)}') } |
         Select-Object PNPDeviceID, ConfigManagerErrorCode
-    } catch {
-      $devs = @()
-    }
+    } catch { $devs = @() }
 
-    if (-not $devs -or $devs.Count -eq 0) {
-      'not-detected'
-      return
-    }
-
-    $anyEnabled = $false
-    foreach ($d in $devs) {
-      if ($d.ConfigManagerErrorCode -ne 22) { $anyEnabled = $true; break }
-    }
-
-    if ($anyEnabled) { 'running' } else { 'stopped' }
+    if (-not $devs -or $devs.Count -eq 0) { 'not-detected' }
+    elseif ($devs | Where-Object { $_.ConfigManagerErrorCode -eq 22 }) { 'stopped' }
+    else { 'running' }
   `;
   const { stdout, stderr, code } = await ps(script);
   if (stderr.trim()) log(`getVddRunState stderr: ${stderr.trim()}`);
@@ -507,39 +438,50 @@ async function driverInstall(): Promise<void> {
   if (!ok) throw new Error('DRIVER_FILES_MISSING');
 
   await ensureRegistryOverrides();
+  await ensureInfMeta();
+  const HWID = canonHwid(INF_META.hwid);
 
-  // 1) Add to driver store (idempotent)
+  // 1) Put INF in driver store (OK if already there)
   await pnputilAttempt('pnputil add-driver', [
     ['/add-driver', DRIVER_INF, '/install'],
   ], 60000);
 
-  // 2) Parse INF for HWID/class info (used below)
-  await ensureInfMeta();
-  const HWID = canonHwid(INF_META.hwid);
-
-  // 3) If no instance exists, create one with nefconw
-  const instancesBefore = await getVddInstanceIds();
-  if (!instancesBefore.length) {
+  // 2) Ensure a device node exists
+  let ids = await getVddInstanceIds();
+  if (!ids.length) {
     const nef = nefconwPath();
     if (nef) {
-      // DefaultInstall ensures any needed reg/services are set up (idempotent)
-      await runExe(nef, ['--inf-default-install', '--inf-path', DRIVER_INF], { timeoutMs: 30000 });
-
-      await runExe(nef, [
-        '--create-device-node',
-        '--hardware-id', HWID,
-        '--class-name', INF_META.className,
-        '--class-guid', INF_META.classGuid,
-      ], { timeoutMs: 30000 });
-
-      // Rescan devices so PnP picks up the new root-enumerated device
+      const r1 = await runExe(nef, ['--create-device-node', '--hardware-id', HWID, '--class-name', INF_META.className, '--class-guid', INF_META.classGuid], { timeoutMs: 30000 });
+      logExeOutput('nefconw create-device-node', r1);
       await pnputilAttempt('pnputil scan-devices', [['/scan-devices']], 30000);
+
+      // Wait until device shows up
+      ids = await waitFor(getVddInstanceIds, a => Array.isArray(a) && a.length > 0, 'wait device presence', 10000, 500);
     } else {
-      log('nefconw.exe not found; skipping device-node creation.');
+      log('nefconw.exe not found; cannot create device node automatically.');
     }
   }
 
-  // 4) Log state
+  // 3) Bind driver to the device (this addresses the "Unknown device" symptom)
+  // Try pnputil update first (binds to any matching devices)
+  await pnputilAttempt('pnputil update-driver', [
+    ['/update-driver', DRIVER_INF, '/install'],
+  ], 60000);
+
+  // Also try nefconw’s explicit install (idempotent)
+  const nef = nefconwPath();
+  if (nef) {
+    const r2 = await runExe(nef, ['--install-driver', '--inf-path', DRIVER_INF], { timeoutMs: 30000 });
+    logExeOutput('nefconw --install-driver', r2);
+    // Some INF packages require DefaultInstall too (harmless if redundant)
+    const r3 = await runExe(nef, ['--inf-default-install', '--inf-path', DRIVER_INF], { timeoutMs: 30000 });
+    logExeOutput('nefconw --inf-default-install', r3);
+  }
+
+  // Rescan & wait for binding (device should no longer be "Unknown device")
+  await pnputilAttempt('pnputil scan-devices', [['/scan-devices']], 30000);
+  await sleep(800);
+  await waitFor(getVddRunState, s => s !== 'not-detected', 'wait device bind', 12000, 600);
   await getVddRunState();
 }
 
@@ -558,7 +500,6 @@ async function driverUninstall(): Promise<void> {
     ], 20000);
   }
 
-  // Delete the installed package with Original Name: MttVDD.inf
   const { published } = await findPublishedInf();
   if (published) {
     await pnputilAttempt(`pnputil delete-driver ${published}`, [
@@ -569,7 +510,6 @@ async function driverUninstall(): Promise<void> {
   }
 
   await getVddRunState();
-  // Keep C:\VirtualDisplayDriver & registry to preserve settings.
 }
 
 async function driverReload(): Promise<void> {
@@ -577,10 +517,7 @@ async function driverReload(): Promise<void> {
   if (!(await isAdmin())) { log('Admin required for reload'); throw new Error('ELEVATION_REQUIRED'); }
 
   const ids = await getVddInstanceIds();
-  if (!ids.length) {
-    log('No device instances found to restart (is it installed and enabled?)');
-    return;
-  }
+  if (!ids.length) { log('No device instances found to restart'); return; }
   for (const id of ids) {
     await pnputilAttempt(`pnputil restart-device (${id})`, [
       ['/restart-device', '/instanceid', id],
@@ -620,7 +557,7 @@ async function driverEnable(): Promise<void> {
   await getVddRunState();
 }
 
-// --- CLI (still supported for Sunshine) ---
+// --- CLI (for Sunshine/etc.) ---
 async function handleCli(): Promise<boolean> {
   const args = process.argv.slice(1).filter(a => !a.startsWith('--inspect'));
   const head = args[0]?.toLowerCase();
@@ -718,15 +655,44 @@ ipcMain.handle('vdisplay:admin:check', async () => await isAdmin());
 ipcMain.handle('vdisplay:admin:relaunch', async () => { await relaunchAsAdmin(); return true; });
 
 // --- window/tray ---
+function resolveTrayIconPath(): string {
+  const prod = path.join(process.resourcesPath, 'icons');
+  const dev1 = path.join(__dirname, '..', 'assets', 'icons');
+  const dev2 = path.join(process.cwd(), 'apps', 'desktop', 'assets', 'icons');
+
+  const pick = (...cands: string[]) => cands.find(p => exists(p)) || cands[0];
+
+  if (process.platform === 'win32') {
+    return pick(path.join(prod, 'tray.ico'), path.join(dev1, 'tray.ico'), path.join(dev2, 'tray.ico'));
+  } else if (process.platform === 'darwin') {
+    return pick(path.join(prod, 'trayTemplate.png'), path.join(dev1, 'trayTemplate.png'), path.join(dev2, 'trayTemplate.png'));
+  } else {
+    return pick(path.join(prod, 'tray.png'), path.join(dev1, 'tray.png'), path.join(dev2, 'tray.png'));
+  }
+}
+
+function resolveWindowIconPath(): string | undefined {
+  const prod = path.join(process.resourcesPath, 'icons');
+  const dev1 = path.join(__dirname, '..', 'assets', 'icons');
+  const dev2 = path.join(process.cwd(), 'apps', 'desktop', 'assets', 'icons');
+  const pick = (...cands: string[]) => cands.find(p => exists(p));
+  if (process.platform === 'win32') return pick(path.join(prod, 'app.ico'), path.join(dev1, 'app.ico'), path.join(dev2, 'app.ico'));
+  if (process.platform === 'darwin') return undefined;
+  return pick(path.join(prod, 'app.png'), path.join(dev1, 'app.png'), path.join(dev2, 'app.png'));
+}
+
 function createWindow() {
   const winIcon = resolveWindowIconPath();
   if (winIcon) log(`Window icon: ${winIcon}`);
 
   const w = new BrowserWindow({
-    width: 1120, height: 800, show: false,
-    icon: winIcon, // (ignored on macOS)
+    width: 1120,
+    height: 800,
+    show: false,
+    icon: winIcon, // ignored on macOS
     webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
   });
+
   if (isDev) {
     log('Loading UI from dev server http://localhost:5173');
     w.loadURL('http://localhost:5173');
@@ -761,7 +727,6 @@ else {
     if (handled) { log('CLI handled, exiting.'); app.quit(); return; }
     createWindow();
 
-    // ---- TRAY with real icon ----
     const trayPath = resolveTrayIconPath();
     let trayImage = nativeImage.createFromPath(trayPath);
     if (!trayImage || trayImage.isEmpty()) {
