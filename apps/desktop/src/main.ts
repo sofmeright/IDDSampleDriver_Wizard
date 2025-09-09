@@ -31,6 +31,10 @@ const DRIVER_ZIP_URL =
 // Hardware ID for the new driver
 const VDD_HARDWARE_ID = 'Root\\MttVDD';
 
+// Display class info (from Microsoft’s class GUID list)
+const CLASS_NAME_DISPLAY = 'Display';
+const CLASS_GUID_DISPLAY = '{4d36e968-e325-11ce-bfc1-08002be10318}';
+
 // Prefer an absolute pnputil.exe to avoid PATH/bitness surprises
 const PNPUTIL = (() => {
   const sysRoot = process.env['SystemRoot'] || 'C:\\Windows';
@@ -122,8 +126,8 @@ function ps(command: string) {
   return new Promise<{ code: number, stdout: string, stderr: string }>((resolve) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], { windowsHide: true });
     let stdout = '', stderr = '';
-    child.stdout.on('data', d => stdout += d.toString());
-    child.stderr.on('data', d => stderr += d.toString());
+    child.stdout.on 'data', d => stdout += d.toString();
+    child.stderr.on 'data', d => stderr += d.toString();
     child.on('close', code => resolve({ code: code ?? 0, stdout, stderr }));
   });
 }
@@ -452,58 +456,57 @@ function nefconwPath() {
 }
 
 /**
- * Tries to create/bring up the Root\MTTVDD device using nefconw.exe.
- * We don't rely on deprecated devcon/wmic. We try a few common verbs and
- * re-check presence after each attempt.
+ * Uses nefconw.exe to:
+ *  1) (optionally) install the INF
+ *  2) create a ROOT-enumerated device node for Root\MTTVDD in the Display class
+ * Then re-scans devices and verifies presence.
  */
-async function ensureDeviceViaNef(timeoutMs = 20000): Promise<boolean> {
+async function ensureDeviceViaNef(timeoutMs = 25000): Promise<boolean> {
   const nef = nefconwPath();
   if (!nef) { log('nefconw.exe not found — skipping nefconw device bring-up.'); return false; }
 
-  // If already present, nothing to do.
+  // Already present?
   if ((await getVddInstanceIds()).length) return true;
 
-  // Capture help to the log (useful to see supported verbs on user’s build)
-  const helpTries: string[][] = [['/?'], ['--help'], ['-h']];
-  for (const args of helpTries) {
-    const r = await runExe(nef, args, { timeoutMs });
-    if ((r.stdout || r.stderr).trim()) {
-      const txt = (r.stdout || r.stderr).trim().split(/\r?\n/).slice(0, 20).join('\n');
-      log(`nefconw help (${args.join(' ')}) first-lines:\n${txt}`);
-      if (r.code === 0 || txt.length) break;
-    }
-  }
-
-  // Candidate verbs (with and without HWID); harmless if unsupported — we'll log and move on.
-  const candidates: string[][] = [
-    ['install'],
-    ['/install'],
-    ['-install'],
-    ['adddevice'],
-    ['/adddevice'],
-    ['create'],
-    ['/create'],
-    ['install', VDD_HARDWARE_ID],
-    ['/install', VDD_HARDWARE_ID],
-    ['adddevice', VDD_HARDWARE_ID],
-    ['/adddevice', VDD_HARDWARE_ID],
-    ['create', VDD_HARDWARE_ID],
-    ['/create', VDD_HARDWARE_ID],
+  // Try nefconw-driven INF install (harmless if already present)
+  const infAttempts: string[][] = [
+    ['--install-driver', '--inf-path', DRIVER_INF],
+    ['--inf-default-install', '--inf-path', DRIVER_INF], // if INF supports [DefaultInstall]
   ];
-
-  for (const args of candidates) {
+  for (const args of infAttempts) {
     const r = await runExe(nef, args, { timeoutMs });
     if (r.stdout.trim()) log(r.stdout.trim());
     if (r.stderr.trim()) log(r.stderr.trim());
-    const after = await getVddInstanceIds();
-    if (after.length) {
-      log(`nefconw succeeded with: ${args.join(' ')}`);
-      return true;
-    }
   }
 
-  log('nefconw did not create a Root\\MTTVDD device — it may require a different verb or a reboot.');
-  return false;
+  // Create the device node explicitly
+  const createArgs = [
+    '--create-device-node',
+    '--hardware-id', VDD_HARDWARE_ID,
+    '--class-name', CLASS_NAME_DISPLAY,
+    '--class-guid', CLASS_GUID_DISPLAY,
+  ];
+  const created = await (async () => {
+    const r = await runExe(nef, createArgs, { timeoutMs });
+    if (r.stdout.trim()) log(r.stdout.trim());
+    if (r.stderr.trim()) log(r.stderr.trim());
+    // Give PnP a moment, then rescan and check
+    await pnputilAttempt('pnputil scan-devices', [['/scan-devices']], 20000);
+    const after = await getVddInstanceIds();
+    return after.length > 0;
+  })();
+
+  if (!created) {
+    // Helpful: show what nefconw thinks when searching by HWID
+    const r = await runExe(nef, ['--find-hwid', '--hardware-id', VDD_HARDWARE_ID], { timeoutMs });
+    if (r.stdout.trim()) log(r.stdout.trim());
+    if (r.stderr.trim()) log(r.stderr.trim());
+    log('nefconw could not create Root\\MTTVDD device — it may require a reboot or different class info.');
+    return false;
+  }
+
+  log('nefconw created Root\\MTTVDD device successfully.');
+  return true;
 }
 // ---------------------------------------------------------------------------
 
@@ -565,17 +568,17 @@ async function driverReload(): Promise<void> {
   log('Driver reload requested');
   if (!(await isAdmin())) { log('Admin required for reload'); throw new Error('ELEVATION_REQUIRED'); }
 
-  const ids = await getVddInstanceIds();
+  let ids = await getVddInstanceIds();
   if (!ids.length) {
     // Try to create it via nefconw if missing
     await ensureDeviceViaNef();
+    ids = await getVddInstanceIds();
   }
-  const afterIds = await getVddInstanceIds();
-  if (!afterIds.length) {
+  if (!ids.length) {
     log('No Root\\MTTVDD device instances found to restart (is it installed and enabled?)');
     return;
   }
-  for (const id of afterIds) {
+  for (const id of ids) {
     await pnputilAttempt(`pnputil restart-device (${id})`, [
       ['/restart-device', '/instanceid', id],
       ['/restart-device', '/deviceid', id],
