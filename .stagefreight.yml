@@ -1,0 +1,23 @@
+version: 1
+
+sources:
+  primary:
+    kind: git
+    worktree: "."
+    url: "https://gitlab.prplanit.com/PrPlanIT/DisplayWizard"
+    default_branch: "dev-go-port"
+
+builds:
+  - id: dwiz
+    kind: binary
+    builder: go
+    from: ./cmd/dwiz
+    output: dwiz
+    platforms:
+      - windows/amd64
+    args:
+      - -ldflags
+      - "-s -w -X github.com/PrPlanIT/DisplayWizard/src/version.Version={version} -X github.com/PrPlanIT/DisplayWizard/src/version.Commit={sha} -X github.com/PrPlanIT/DisplayWizard/src/version.BuildDate={date}"
+    env:
+      CGO_ENABLED: "0"
+

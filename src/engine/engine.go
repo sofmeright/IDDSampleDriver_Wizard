@@ -51,11 +51,16 @@ func Plan(current *core.CurrentState, desired *core.DesiredState) core.Plan {
 
 	// Driver reconciliation
 	if desired.Driver != nil {
-		if desired.Driver.Installed && !current.Driver.Installed {
+		if desired.Driver.Reload && current.Driver.Installed {
 			ops = append(ops, core.Operation{
-				Type:   core.OpEnsureDriverInstalled,
+				Type:   core.OpEnsureDriverReloaded,
+				Reason: "driver reload requested",
+			})
+		} else if desired.Driver.Installed && !current.Driver.Installed {
+			ops = append(ops, core.Operation{
+				Type:    core.OpEnsureDriverInstalled,
 				Payload: desired.Driver.Package,
-				Reason: "driver not installed, desired installed",
+				Reason:  "driver not installed, desired installed",
 			})
 		} else if !desired.Driver.Installed && current.Driver.Installed {
 			ops = append(ops, core.Operation{
@@ -72,6 +77,24 @@ func Plan(current *core.CurrentState, desired *core.DesiredState) core.Plan {
 			Payload: desired.Config,
 			Reason:  "config change requested",
 		})
+	}
+
+	// Backup reconciliation
+	if desired.Backup != nil {
+		if desired.Backup.Create != "" {
+			ops = append(ops, core.Operation{
+				Type:    core.OpEnsureBackupCreated,
+				Payload: desired.Backup.Create,
+				Reason:  "backup creation requested",
+			})
+		}
+		if desired.Backup.Restore != "" {
+			ops = append(ops, core.Operation{
+				Type:    core.OpEnsureBackupRestored,
+				Payload: desired.Backup.Restore,
+				Reason:  "backup restore requested",
+			})
+		}
 	}
 
 	return core.Plan{Operations: ops}
