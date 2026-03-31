@@ -7,6 +7,13 @@ sources:
     url: "https://gitlab.prplanit.com/PrPlanIT/DisplayWizard"
     default_branch: "dev-go-port"
 
+policies:
+  git_tags:
+    stable: "^v?\\d+\\.\\d+\\.\\d+$"
+    prerelease: "^v?\\d+\\.\\d+\\.\\d+-.+"
+  branches:
+    main: "^(main|dev-go-port)$"
+
 builds:
   - id: dwiz
     kind: binary
@@ -20,4 +27,20 @@ builds:
       - "-s -w -X github.com/PrPlanIT/DisplayWizard/src/version.Version={version} -X github.com/PrPlanIT/DisplayWizard/src/version.Commit={sha} -X github.com/PrPlanIT/DisplayWizard/src/version.BuildDate={date}"
     env:
       CGO_ENABLED: "0"
+
+targets:
+  - id: dwiz-archive
+    kind: binary-archive
+    build: dwiz
+    format: auto
+    name: "dwiz-{version}-{os}-{arch}"
+    include: ["README.md", "LICENSE"]
+    checksums: true
+    when: { git_tags: [stable], events: [tag] }
+
+  - id: primary-release
+    kind: release
+    archives: dwiz-archive
+    aliases: ["v{version}", "latest"]
+    when: { git_tags: [stable], events: [tag] }
 
