@@ -1,10 +1,10 @@
 {
-  "name": "vdisplay-wizard-workspace",
+  "name": "display-wizard-workspace",
   "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "install:ci": "pnpm install --no-frozen-lockfile",
-    "build:web": "pnpm -C apps/web build",
-    "build:desktop": "pnpm -C apps/desktop build"
+    "build:web": "pnpm -C ui/web build",
+    "build:desktop": "pnpm -C ui/desktop build"
   }
 }
