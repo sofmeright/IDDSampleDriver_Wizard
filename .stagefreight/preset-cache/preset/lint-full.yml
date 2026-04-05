@@ -1,0 +1,29 @@
+lint:
+  level: full
+  modules:
+    freshness:
+      enabled: true
+      options:
+        cache_ttl: 300
+        sources:
+          docker_images: true
+          github_releases: true
+          go_modules: true
+        vulnerability:
+          enabled: true
+    tabs:
+      enabled: true
+    secrets:
+      enabled: true
+      exclude:
+        - "go.sum"
+    conflicts:
+      enabled: true
+    filesize:
+      enabled: true
+    unicode:
+      enabled: true
+      options:
+        detect_bidi: true
+        detect_zero_width: true
+        detect_control_ascii: true

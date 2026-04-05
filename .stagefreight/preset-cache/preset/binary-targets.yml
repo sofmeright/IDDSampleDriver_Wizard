@@ -1,0 +1,24 @@
+targets:
+  # Dev channel
+  - id: dev-archive
+    kind: binary-archive
+    format: auto
+    name: "{id}-dev-{sha:8}-{os}-{arch}"
+    checksums: true
+    when: { branches: [main], events: [push] }
+    retention:
+      keep_last: 6
+
+  # Stable release
+  - id: stable-archive
+    kind: binary-archive
+    format: auto
+    name: "{id}-{version}-{os}-{arch}"
+    include: ["README.md", "LICENSE"]
+    checksums: true
+    when: { git_tags: [stable], events: [tag] }
+
+  - id: primary-release
+    kind: release
+    aliases: ["v{version}", "latest"]
+    when: { git_tags: [stable], events: [tag] }

@@ -1,0 +1,40 @@
+# ------------------------------------------------------------------------------
+# GENERATED / ENFORCED BY STAGEFREIGHT GOVERNANCE
+# Source repo: PrPlanIT/MaintenancePolicy
+# Source ref: 928f9dbcf7f65387d30d3f73aaf65ea57c55ec55
+# Cluster: prplanit-displaywizard
+# This .stagefreight.yml is governed, not purely local.
+# To disable governance, detach from the control repo workflow.
+# Manual changes may be overwritten by reconciliation.
+# ------------------------------------------------------------------------------
+
+version: 1
+vars:
+  github_org: PrPlanIT
+  gitlab_group: PrPlanIT
+  org: prplanit
+targets:
+  preset: preset/binary-targets.yml
+lint:
+  preset: preset/lint-full.yml
+security:
+  preset: preset/security.yml
+assets:
+  - id: ci-skeleton
+    source:
+      path: integrations/gitlab/standard.gitlab-ci.yml
+      ref: main
+      repo_url: https://gitlab.prplanit.com/PrPlanIT/StageFreight
+    target: .gitlab-ci.yml
+  - id: claude-settings
+    source:
+      path: claude-code/project-settings.json
+      ref: main
+      repo_url: https://gitlab.prplanit.com/PrPlanIT/MaintenancePolicy
+    target: .claude/settings.json
+preset_source:
+  cache_policy: authoritative
+  project_id: PrPlanIT/MaintenancePolicy
+  provider: gitlab
+  ref: 928f9dbcf7f65387d30d3f73aaf65ea57c55ec55
+  repo_url: https://gitlab.prplanit.com

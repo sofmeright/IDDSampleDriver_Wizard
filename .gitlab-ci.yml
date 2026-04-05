@@ -1,0 +1,113 @@
+# stagefreight-skeleton: standard
+# provider: gitlab
+# supports: validate, deps, build, security, release, docs
+#
+# Standard build transport. Backend-agnostic — engine auto-detects:
+#   BUILDKIT_HOST set → persistent buildkitd (remote driver, fast cache)
+#   BUILDKIT_HOST not set → DinD (docker-container driver)
+# Runner compose determines which endpoints exist. Skeleton is the same for both.
+# StageFreight decides what actually runs based on .stagefreight.yml config.
+
+stages:
+  - deps
+  - build
+  - security
+  - release
+  - docs
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+
+.stagefreight-context: &sf-context
+  - export SF_CI_PROVIDER=gitlab
+  - export SF_CI_EVENT="${CI_PIPELINE_SOURCE}"
+  - export SF_CI_BRANCH="${CI_COMMIT_BRANCH}"
+  - export SF_CI_TAG="${CI_COMMIT_TAG}"
+  - export SF_CI_SHA="${CI_COMMIT_SHA}"
+  - export SF_CI_DEFAULT_BRANCH="${CI_DEFAULT_BRANCH}"
+  - export SF_CI_REPO_URL="${CI_PROJECT_URL}"
+  - export SF_CI_WORKSPACE="$PWD"
+  - export SF_CI_PIPELINE_ID="${CI_PIPELINE_ID}"
+
+# Runner transport — DinD access for all runners.
+# BUILDKIT_HOST is NOT here — operators add it via CI/CD variables
+# or runner config when persistent buildkitd is available.
+.runner-variables: &runner-variables
+  DOCKER_HOST: "tcp://dind:2376"
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: "/certs/client"
+
+default:
+  image: docker.cr.pcfae.com/prplanit/stagefreight:latest-dev
+  interruptible: true
+
+dependency-update:
+  stage: deps
+  variables:
+    GIT_DEPTH: 0
+    <<: *runner-variables
+  before_script:
+    - *sf-context
+  script:
+    - stagefreight ci run deps
+  artifacts:
+    paths: [.stagefreight/deps/]
+    expire_in: 1 week
+  allow_failure: true
+
+build:
+  stage: build
+  variables:
+    <<: *runner-variables
+  before_script:
+    - *sf-context
+  script:
+    - stagefreight ci run build
+  artifacts:
+    paths: [.stagefreight/]
+    reports:
+      junit: .stagefreight/reports/lint.xml
+    expire_in: 2 hours
+
+security-scan:
+  stage: security
+  needs: [build]
+  variables:
+    <<: *runner-variables
+  before_script:
+    - *sf-context
+  script:
+    - stagefreight ci run security
+  artifacts:
+    paths: [.stagefreight/security/]
+    expire_in: 1 week
+  allow_failure: true
+
+create-release:
+  stage: release
+  needs:
+    - build
+    - security-scan
+  variables:
+    GIT_DEPTH: 0
+  before_script:
+    - *sf-context
+  script:
+    - stagefreight ci run release
+  allow_failure: true
+
+generate-docs:
+  stage: docs
+  needs:
+    - build
+    - create-release
+  variables:
+    GIT_DEPTH: 0
+    BUILD_DATE: "$CI_COMMIT_TIMESTAMP"
+  before_script:
+    - *sf-context
+  script:
+    - stagefreight ci run docs
+  when: always
+  allow_failure: true
