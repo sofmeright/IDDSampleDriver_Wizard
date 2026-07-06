@@ -1,0 +1,17 @@
+# Build output
+/dist/
+/dwiz
+/dwiz.exe
+
+# Node / pnpm (ui/ workspace)
+node_modules/
+.pnpm-store/
+
+# StageFreight artifacts (badges committed separately if enabled)
+/.stagefreight/*
+!/.stagefreight/badges/
+
+# OS / editor cruft
+.DS_Store
+
+# NOTE: bin/nefconw.exe is a vendored Windows tool — intentionally tracked.

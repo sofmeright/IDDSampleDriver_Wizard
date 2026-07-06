@@ -1,6 +1,0 @@
-# docker/docker-compose.yml
-version: '3.8'
-services:
-  api:
-    build: ./
-    ports: ["5757:5757"]

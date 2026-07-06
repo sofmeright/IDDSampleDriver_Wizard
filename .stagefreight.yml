@@ -1,20 +1,65 @@
 version: 1
 
-sources:
-  primary:
-    kind: git
-    worktree: "."
-    url: "https://gitlab.prplanit.com/PrPlanIT/DisplayWizard"
-    default_branch: "dev-go-port"
+ci:
+  image: docker.cr.pcfae.com/prplanit/stagefreight:latest-dev
 
-policies:
-  git_tags:
-    stable: "^v?\\d+\\.\\d+\\.\\d+$"
-    prerelease: "^v?\\d+\\.\\d+\\.\\d+-.+"
+vars:
+  org: prplanit
+  github_org: PrPlanIT
+  gitlab_group: PrPlanIT
+  repo: DisplayWizard
+
+matchers:
   branches:
     main: "^(main|dev-go-port)$"
 
+versioning:
+  tag_sources:
+    - id: stable
+      pattern: "^v?\\d+\\.\\d+\\.\\d+$"
+    - id: prerelease
+      pattern: "^v?\\d+\\.\\d+\\.\\d+-.+"
+  branch_builds:
+    - id: default
+      base_from: [stable]
+      format: "{base}-dev+{sha}"
+  no_lineage:
+    # dev-go-port has no version tags yet — bootstrap a dev version instead of
+    # failing (mode: error). Switch to real versions by tagging vX.Y.Z.
+    mode: explicit
+    version: "0.0.0-dev+{sha}"
+
+forges:
+  - id: gitlab
+    provider: gitlab
+    url: "https://gitlab.prplanit.com"
+    credentials: GITLAB
+
+  - id: github
+    provider: github
+    url: "https://github.com"
+    credentials: GITHUB
+
+repos:
+  - id: primary
+    forge: gitlab
+    project: "{var:gitlab_group}/{var:repo}"
+    roles: [primary]
+    branches:
+      default: dev-go-port
+    worktree: "."
+
+  - id: github-mirror
+    forge: github
+    project: "{var:github_org}/{var:repo}"
+    roles: [mirror, publish-origin]
+    sync:
+      git: true
+      releases: true
+
 builds:
+  # Pure-Go, cross-compiled to Windows from the Linux CI (CGO off). Version info
+  # is injected via -ldflags from the resolved version/sha/date.
   - id: dwiz
     kind: binary
     builder: go
@@ -29,6 +74,27 @@ builds:
       CGO_ENABLED: "0"
 
 targets:
+  # ── Dev channel — every push / manual run on the default branch ──────────────
+  - id: dwiz-dev-archive
+    kind: binary-archive
+    build: dwiz
+    format: auto
+    name: "dwiz-dev-{sha:8}-{os}-{arch}"
+    checksums: true
+    when: { branches: [main], events: [push, manual] }
+    retention:
+      keep_last: 6
+      protect: ["dwiz-latest-dev-*", "dwiz-latest-*"]
+
+  - id: dwiz-dev-latest
+    kind: binary-archive
+    build: dwiz
+    format: auto
+    name: "dwiz-latest-dev-{os}-{arch}"
+    checksums: true
+    when: { branches: [main], events: [push, manual] }
+
+  # ── Stable release — tagged versions ────────────────────────────────────────
   - id: dwiz-archive
     kind: binary-archive
     build: dwiz
@@ -44,3 +110,26 @@ targets:
     aliases: ["v{version}", "latest"]
     when: { git_tags: [stable], events: [tag] }
 
+  - id: github-release
+    kind: release
+    mirror: github-mirror
+    sync_release: true
+    when: { git_tags: [stable], events: [tag] }
+
+dependency:
+  enabled: true
+  output: ".stagefreight/deps"
+  scope:
+    go_modules: true
+  commit:
+    enabled: true
+    type: chore
+    message: "update managed dependencies"
+    push: true
+    skip_ci: false
+
+lint:
+  level: full
+
+release:
+  enabled: true
