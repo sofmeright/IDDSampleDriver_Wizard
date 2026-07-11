@@ -73,6 +73,29 @@ builds:
     env:
       CGO_ENABLED: "0"
 
+  # The shipped product: the Electron Windows installer. `builder: node` runs the
+  # build INSIDE the electron-builder wine image (repo mounted), so electron-builder
+  # cross-builds the Windows .exe from the Linux CI. depends_on: dwiz → the Go binary
+  # is built first; the command stages it into ui/desktop/bin/ and builds the web
+  # renderer (pnpm -r, a pnpm workspace) before electron-builder packs. Output is the
+  # portable installer glob under ui/desktop/release/.
+  - id: dwiz-desktop
+    kind: binary
+    builder: node
+    from: .
+    depends_on: dwiz
+    platforms:
+      - windows/amd64
+    image: electronuserland/builder:wine
+    output: ui/desktop/release/*.exe
+    command: >-
+      corepack enable &&
+      pnpm install --no-frozen-lockfile &&
+      pnpm -r build &&
+      mkdir -p ui/desktop/bin &&
+      cp .stagefreight/dist/windows-amd64/dwiz.exe ui/desktop/bin/dwiz.exe &&
+      pnpm -C ui/desktop run pack
+
 targets:
   # ── Dev channel — every push / manual run on the default branch ──────────────
   - id: dwiz-dev-archive
@@ -91,6 +114,15 @@ targets:
     build: dwiz
     format: auto
     name: "dwiz-latest-dev-{os}-{arch}"
+    checksums: true
+    when: { branches: [main], events: [push, manual] }
+
+  # The Electron installer on the dev channel — the actual product artifact.
+  - id: dwiz-desktop-dev-latest
+    kind: binary-archive
+    build: dwiz-desktop
+    format: auto
+    name: "VDisplay-Wizard-latest-dev-{os}-{arch}"
     checksums: true
     when: { branches: [main], events: [push, manual] }
 
