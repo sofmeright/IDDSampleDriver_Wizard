@@ -130,11 +130,6 @@ dependency:
 
 lint:
   level: full
-  # This pipeline builds + ships the Go dwiz binary. The ui/ Electron+web app is a
-  # separate build (electron-builder/wine) with its own toolchain/deps, so it's out
-  # of SF's lint scope here. Bring it back in if/when Electron packaging moves to SF.
-  exclude:
-    - "ui/**"
   modules:
     freshness:
       options:
