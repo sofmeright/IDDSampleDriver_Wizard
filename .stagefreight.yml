@@ -97,27 +97,22 @@ builds:
       pnpm -C ui/desktop run pack
 
 targets:
+  # We publish ONLY the Electron installer — the actual Windows product. The bare
+  # dwiz Go binary is an INGREDIENT bundled inside it (built above via dwiz-desktop's
+  # depends_on), never published on its own: it has no Windows UI.
+  #
   # ── Dev channel — every push / manual run on the default branch ──────────────
-  - id: dwiz-dev-archive
+  - id: dwiz-desktop-dev-archive
     kind: binary-archive
-    build: dwiz
+    build: dwiz-desktop
     format: auto
-    name: "dwiz-dev-{sha:8}-{os}-{arch}"
+    name: "VDisplay-Wizard-dev-{sha:8}-{os}-{arch}"
     checksums: true
     when: { branches: [main], events: [push, manual] }
     retention:
       keep_last: 6
-      protect: ["dwiz-latest-dev-*", "dwiz-latest-*"]
+      protect: ["VDisplay-Wizard-latest-dev-*", "VDisplay-Wizard-latest-*"]
 
-  - id: dwiz-dev-latest
-    kind: binary-archive
-    build: dwiz
-    format: auto
-    name: "dwiz-latest-dev-{os}-{arch}"
-    checksums: true
-    when: { branches: [main], events: [push, manual] }
-
-  # The Electron installer on the dev channel — the actual product artifact.
   - id: dwiz-desktop-dev-latest
     kind: binary-archive
     build: dwiz-desktop
@@ -127,18 +122,18 @@ targets:
     when: { branches: [main], events: [push, manual] }
 
   # ── Stable release — tagged versions ────────────────────────────────────────
-  - id: dwiz-archive
+  - id: dwiz-desktop-archive
     kind: binary-archive
-    build: dwiz
+    build: dwiz-desktop
     format: auto
-    name: "dwiz-{version}-{os}-{arch}"
+    name: "VDisplay-Wizard-{version}-{os}-{arch}"
     include: ["README.md", "LICENSE"]
     checksums: true
     when: { git_tags: [stable], events: [tag] }
 
   - id: primary-release
     kind: release
-    archives: dwiz-archive
+    archives: dwiz-desktop-archive
     aliases: ["v{version}", "latest"]
     when: { git_tags: [stable], events: [tag] }
 
