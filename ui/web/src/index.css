@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 :root { color-scheme: dark; }
 html, body, #root { height: 100%; }
 body { @apply bg-[#310937] text-slate-100; }

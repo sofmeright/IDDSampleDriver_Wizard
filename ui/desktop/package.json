@@ -30,9 +30,7 @@
       "target": "portable",
       "artifactName": "VDisplay-Wizard-${version}-win-${arch}.${ext}",
       "icon": "assets/icons/app.ico"
-    },
-
-    "electronVersion": "31.7.7"
+    }
   },
 
   "devDependencies": {
