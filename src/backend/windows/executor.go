@@ -2,6 +2,7 @@ package windows
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -96,13 +97,81 @@ func (b *Backend) requireAdmin(ctx context.Context, op core.Operation) *core.Res
 		return nil
 	}
 
-	if err := Elevate(ctx, "__elevated-op", string(op.Type)); err != nil {
-		if errors.Is(err, ErrElevationDeclined) {
-			return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: fmt.Errorf("administrator elevation was declined")}
+	// Not elevated: run this one op in an elevated child (dwiz __elevated-op) and
+	// hand its REAL result back across the UAC boundary via a temp file — the two
+	// processes can't share memory, and the child runs hidden, so its result file
+	// is the only way to see what actually happened (installed / failed and why).
+	resultPath, err := elevatedResultPath()
+	if err != nil {
+		return &core.Result{OperationID: op.ID, Type: op.Type, Error: fmt.Errorf("prepare elevated result: %w", err)}
+	}
+	defer os.Remove(resultPath)
+
+	elevErr := Elevate(ctx, "__elevated-op", string(op.Type), "--result-file", resultPath)
+
+	// The child's own recorded result is richest — prefer it whenever it wrote one.
+	if res, ok := readElevatedResult(resultPath, op); ok {
+		return &res
+	}
+	// No result file: the child never got far enough to record one. Map the error.
+	if elevErr != nil {
+		if errors.Is(elevErr, ErrElevationDeclined) {
+			return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: errors.New("administrator elevation was declined")}
 		}
-		return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: fmt.Errorf("elevated operation failed: %w", err)}
+		return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: fmt.Errorf("elevated operation failed: %w", elevErr)}
 	}
 	return &core.Result{OperationID: op.ID, Type: op.Type, Success: true, Message: fmt.Sprintf("%s completed (elevated)", op.Type)}
+}
+
+// ElevatedResult is the on-disk hand-back from an elevated `dwiz __elevated-op`
+// child to its unprivileged parent. Defined in this (untagged) file so both the
+// cmd writer and the backend reader see it on every GOOS.
+type ElevatedResult struct {
+	OperationID string `json:"operation_id"`
+	Type        string `json:"type"`
+	Success     bool   `json:"success"`
+	Message     string `json:"message"`
+	Error       string `json:"error,omitempty"`
+}
+
+// elevatedResultPath reserves a unique temp path for the child to write into.
+func elevatedResultPath() (string, error) {
+	f, err := os.CreateTemp("", "dwiz-elev-*.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	f.Close()
+	return name, nil
+}
+
+// readElevatedResult loads the child's recorded result; ok is false when the
+// child wrote nothing (declined UAC, crashed before recording, etc.).
+func readElevatedResult(path string, op core.Operation) (core.Result, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return core.Result{}, false
+	}
+	var er ElevatedResult
+	if json.Unmarshal(data, &er) != nil {
+		return core.Result{}, false
+	}
+	res := core.Result{
+		OperationID: er.OperationID,
+		Type:        core.OperationType(er.Type),
+		Success:     er.Success,
+		Message:     er.Message,
+	}
+	if res.OperationID == "" {
+		res.OperationID = op.ID
+	}
+	if res.Type == "" {
+		res.Type = op.Type
+	}
+	if er.Error != "" {
+		res.Error = errors.New(er.Error)
+	}
+	return res, true
 }
 
 func (b *Backend) ensureDriverInstalled(ctx context.Context, op core.Operation) core.Result {

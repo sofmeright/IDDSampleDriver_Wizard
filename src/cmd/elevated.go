@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/PrPlanIT/DisplayWizard/src/backend/windows"
 	"github.com/PrPlanIT/DisplayWizard/src/core"
 )
+
+var elevatedResultFile string
 
 // elevatedCmd is the internal entry point relaunched under UAC by the backend's
 // Elevate(). It runs exactly ONE privileged driver operation and exits with a
@@ -43,6 +46,25 @@ var elevatedCmd = &cobra.Command{
 		}
 
 		result := backend.Execute(cmd.Context(), op)
+
+		// Hand the real result back to the unprivileged parent across the UAC
+		// boundary. The parent runs us hidden and can otherwise only read our exit
+		// code, so without this it cannot tell what actually happened.
+		if elevatedResultFile != "" {
+			er := windows.ElevatedResult{
+				OperationID: result.OperationID,
+				Type:        string(result.Type),
+				Success:     result.Success,
+				Message:     result.Message,
+			}
+			if result.Error != nil {
+				er.Error = result.Error.Error()
+			}
+			if data, mErr := json.Marshal(er); mErr == nil {
+				_ = os.WriteFile(elevatedResultFile, data, 0o600)
+			}
+		}
+
 		printResult(result)
 		if !result.Success {
 			// Non-zero exit signals failure back to the parent's
@@ -54,5 +76,6 @@ var elevatedCmd = &cobra.Command{
 }
 
 func init() {
+	elevatedCmd.Flags().StringVar(&elevatedResultFile, "result-file", "", "internal: path to write the operation result JSON for the parent process")
 	rootCmd.AddCommand(elevatedCmd)
 }

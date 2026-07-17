@@ -373,9 +373,9 @@ export default function App(){
           </Card>
           <Card title="GPU & Monitors">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
-              <div className="flex items-center gap-2">
-                <label className="min-w-[44px]" style={{ color: accentText }}>GPU</label>
-                <select className="rounded px-2 py-1 flex-1" style={{ color: accentText }} value={st.gpuName} onChange={e=>setSt({...st, gpuName:e.target.value})}>
+              <div className="flex items-center gap-2 min-w-0">
+                <label className="min-w-[44px] shrink-0" style={{ color: accentText }}>GPU</label>
+                <select className="rounded px-2 py-1 flex-1 min-w-0" style={{ color: accentText }} value={st.gpuName} onChange={e=>setSt({...st, gpuName:e.target.value})}>
                   <option value="(Select GPU)">(Select GPU)</option>
                   {gpuList.map((g:string)=> <option key={g} value={g}>{g}</option>)}
                 </select>
