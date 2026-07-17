@@ -3,7 +3,6 @@ package windows
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -73,13 +72,4 @@ func runExe(ctx context.Context, exe string, args []string, timeoutSec int) (Exe
 // escPS escapes a string for embedding in a PowerShell single-quoted string.
 func escPS(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
-}
-
-// isAdmin checks whether the current process is running with admin privileges.
-func isAdmin(ctx context.Context) (bool, error) {
-	r, err := ps(ctx, "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)")
-	if err != nil {
-		return false, fmt.Errorf("admin check: %w", err)
-	}
-	return strings.Contains(strings.ToLower(r.Stdout), "true"), nil
 }

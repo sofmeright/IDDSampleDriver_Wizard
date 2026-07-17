@@ -33,10 +33,8 @@ const api = {
   driverReload: () => ipcRenderer.invoke('vdisplay:driver:reload'),
   ensureDriverPkg: () => ipcRenderer.invoke('vdisplay:driver:ensurePkg'),
   driverState: () => ipcRenderer.invoke('vdisplay:driver:state'),
-
-  // admin
-  isAdmin: () => ipcRenderer.invoke('vdisplay:admin:check'),
-  relaunchAsAdmin: () => ipcRenderer.invoke('vdisplay:admin:relaunch'),
+  // Elevation is handled per-operation by the Go backend (native UAC); the GUI
+  // no longer checks admin status or relaunches itself elevated.
 };
 
 contextBridge.exposeInMainWorld('vdisplay', api);

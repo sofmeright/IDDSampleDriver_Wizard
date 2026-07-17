@@ -2,6 +2,7 @@ package windows
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,15 +78,31 @@ func (b *Backend) Execute(ctx context.Context, op core.Operation) core.Result {
 	}
 }
 
+// requireAdmin gates a privileged operation on elevation.
+//
+//   - Already elevated: returns nil so the caller performs the real work inline.
+//   - Not elevated: relaunches this operation in an elevated child process via
+//     UAC (Elevate) and returns a *core.Result reflecting that child's outcome,
+//     short-circuiting the inline work in this unprivileged process.
+//
+// The elevated child runs `dwiz __elevated-op <type>`, where requireAdmin sees
+// an elevated token and returns nil — so the real work executes there, once.
 func (b *Backend) requireAdmin(ctx context.Context, op core.Operation) *core.Result {
-	admin, err := isAdmin(ctx)
+	elevated, err := IsElevated()
 	if err != nil {
-		return &core.Result{OperationID: op.ID, Type: op.Type, Error: fmt.Errorf("admin check: %w", err)}
+		return &core.Result{OperationID: op.ID, Type: op.Type, Error: fmt.Errorf("elevation check: %w", err)}
 	}
-	if !admin {
-		return &core.Result{OperationID: op.ID, Type: op.Type, Error: fmt.Errorf("operation %s requires administrator privileges", op.Type)}
+	if elevated {
+		return nil
 	}
-	return nil
+
+	if err := Elevate(ctx, "__elevated-op", string(op.Type)); err != nil {
+		if errors.Is(err, ErrElevationDeclined) {
+			return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: fmt.Errorf("administrator elevation was declined")}
+		}
+		return &core.Result{OperationID: op.ID, Type: op.Type, Success: false, Error: fmt.Errorf("elevated operation failed: %w", err)}
+	}
+	return &core.Result{OperationID: op.ID, Type: op.Type, Success: true, Message: fmt.Sprintf("%s completed (elevated)", op.Type)}
 }
 
 func (b *Backend) ensureDriverInstalled(ctx context.Context, op core.Operation) core.Result {

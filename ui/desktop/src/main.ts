@@ -4,10 +4,11 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let dwizProc: ChildProcess | null = null;
 const isDev = process.env.ELECTRON_DEV === '1';
 
 const RES_UI = path.join(process.resourcesPath, 'ui');
@@ -49,25 +50,64 @@ async function api<T = any>(method: string, path: string, body?: any): Promise<T
   return text ? JSON.parse(text) : null;
 }
 
-// --- Admin (GUI concern — Go backend detects, Electron relaunches) ---
-async function isAdmin(): Promise<boolean> {
-  try {
-    // Check via Go API — if API is running elevated, we're good
-    const status = await api('GET', '/api/status');
-    return true; // API responded = it's running (admin check is backend-internal)
-  } catch {
-    return false;
-  }
+// Elevation is now owned by the Go backend: each privileged driver operation
+// triggers a native UAC prompt per-op (ShellExecuteEx "runas"). The GUI just
+// calls the API and no longer relaunches itself elevated.
+
+// --- Go API backend lifecycle ---
+// The bundled `dwiz` binary IS the API server; nothing else starts it. We spawn
+// it user-level on launch (driver ops self-elevate per-op via UAC) and stop it
+// on quit. The bare Go binary is bundled via electron-builder extraResources
+// (bin/ → resources/bin/).
+function resolveDwizBinary(): string {
+  const exe = process.platform === 'win32' ? 'dwiz.exe' : 'dwiz';
+  const prod = path.join(process.resourcesPath, 'bin', exe);
+  const dev1 = path.join(__dirname, '..', 'bin', exe);
+  const dev2 = path.join(process.cwd(), 'ui', 'desktop', 'bin', exe);
+  return [prod, dev1, dev2].find(p => exists(p)) || prod;
 }
 
-async function relaunchAsAdmin() {
-  const exe = process.execPath.replace(/"/g, '`"');
-  const args = process.argv.slice(1).map(a => a.replace(/"/g, '`"')).join(' ');
-  const child = spawn('powershell.exe', [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    `Start-Process -Verb RunAs -FilePath "${exe}" -ArgumentList "${args}"`,
-  ], { windowsHide: true });
-  child.on('close', () => app.quit());
+function startBackend() {
+  // A DWIZ_API override means "use an externally-run backend" (dev); don't spawn ours.
+  if (process.env.DWIZ_API) {
+    log(`DWIZ_API override set (${process.env.DWIZ_API}); not spawning bundled backend.`);
+    return;
+  }
+  const bin = resolveDwizBinary();
+  if (!exists(bin)) {
+    log(`Backend binary not found at ${bin}; the API will be unavailable.`);
+    return;
+  }
+  log(`Starting backend: ${bin} serve --addr 127.0.0.1:5757`);
+  dwizProc = spawn(bin, ['serve', '--addr', '127.0.0.1:5757'], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  dwizProc.stdout?.on('data', d => log(`[dwiz] ${String(d).trimEnd()}`));
+  dwizProc.stderr?.on('data', d => log(`[dwiz] ${String(d).trimEnd()}`));
+  dwizProc.on('exit', (code, signal) => { log(`Backend exited (code=${code} signal=${signal})`); dwizProc = null; });
+  dwizProc.on('error', err => { log(`Backend spawn error: ${err.message}`); dwizProc = null; });
+}
+
+async function waitForBackend(timeoutMs = 15000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${API_BASE}/api/status`);
+      if (res.ok) { log('Backend is healthy.'); return true; }
+    } catch { /* not listening yet */ }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  log('Backend did not become healthy within timeout.');
+  return false;
+}
+
+function stopBackend() {
+  if (dwizProc && !dwizProc.killed) {
+    log('Stopping backend.');
+    dwizProc.kill();
+    dwizProc = null;
+  }
 }
 
 // --- IPC handlers → Go API ---
@@ -245,15 +285,6 @@ ipcMain.handle('vdisplay:driver:ensurePkg', async () => {
   return true;
 });
 
-ipcMain.handle('vdisplay:admin:check', async () => {
-  return isAdmin();
-});
-
-ipcMain.handle('vdisplay:admin:relaunch', async () => {
-  await relaunchAsAdmin();
-  return true;
-});
-
 // --- window/tray (unchanged — pure Electron concerns) ---
 function resolveTrayIconPath(): string {
   const prod = path.join(process.resourcesPath, 'icons');
@@ -324,6 +355,8 @@ else {
   app.whenReady().then(async () => {
     log(`App ready. resourcesPath=${process.resourcesPath}`);
     log(`API base: ${API_BASE}`);
+    startBackend();
+    await waitForBackend();
     createWindow();
 
     const trayPath = resolveTrayIconPath();
@@ -347,4 +380,5 @@ else {
   });
   app.on('activate', () => { log('App activate'); ensureWindow(); });
   app.on('window-all-closed', () => { log('All windows closed (tray continues running)'); });
+  app.on('before-quit', () => { log('Quitting — stopping backend.'); stopBackend(); });
 }

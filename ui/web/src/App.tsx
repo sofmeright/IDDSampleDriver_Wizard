@@ -197,8 +197,6 @@ export default function App(){
     api.saveConfig({ gpuName: st.gpuName, monitorCount: st.monitorCount, active: st.active, retired: st.retired }).catch(()=>{});
   }, [st.gpuName, st.monitorCount, st.active]);
 
-  const relaunchAdmin = () => api?.relaunchAsAdmin();
-
   const refreshDriverState = async () => {
     if (!api) return;
     const r = await api.driverState();
@@ -321,7 +319,7 @@ export default function App(){
       {!isAdmin && (
         <div className="max-w-6xl mx-auto px-6">
           <div className="mb-4 px-3 py-2 rounded-lg border border-yellow-400/40 bg-yellow-200/10 text-sm">
-            ⚠️ Some actions need Administrator rights. <button onClick={relaunchAdmin} className="underline">Relaunch as Admin</button>
+            ⚠️ Some actions need Administrator rights. You'll be prompted to approve them (UAC) when you run them.
           </div>
         </div>
       )}
