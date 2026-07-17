@@ -22,6 +22,10 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveAddr, "addr", ":5757", "API listen address")
+	// Loopback by default: the API is unauthenticated and can install drivers, so
+	// it must not be network-reachable. Binding a routable address requires
+	// explicitly passing --addr (e.g. --addr 0.0.0.0:5757), and must not be done
+	// until the API is behind authentication.
+	serveCmd.Flags().StringVar(&serveAddr, "addr", "127.0.0.1:5757", "API listen address (loopback only unless explicitly overridden)")
 	rootCmd.AddCommand(serveCmd)
 }

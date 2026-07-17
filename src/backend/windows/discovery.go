@@ -44,9 +44,13 @@ func discoverDriverState(ctx context.Context) (core.DriverState, error) {
 		state.Installed = true
 		state.Running = false
 	default:
-		// not-detected — check if INF exists in driver store
-		if _, err := os.Stat(driverINF); err == nil {
-			state.Installed = true // files present but device not bound
+		// The device is not present. "Installed" must mean the driver is published
+		// in the WINDOWS DRIVER STORE — not merely that files are staged on disk.
+		// (driverINF points at C:\VirtualDisplayDriver\, the app's own download/stage
+		// dir; a file lingering there does NOT mean the driver is installed, and
+		// treating it as such pins the UI to "Uninstall" forever.) Ask pnputil.
+		if published, err := pnputilFindPublishedInf(ctx); err == nil && published != "" {
+			state.Installed = true // in the driver store, device just not bound
 		}
 	}
 
