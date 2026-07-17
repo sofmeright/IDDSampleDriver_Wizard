@@ -121,6 +121,21 @@ targets:
     checksums: true
     when: { branches: [main], events: [push, manual] }
 
+  # Dev release channel: publish the dev installer as a rolling latest-dev GitLab prerelease so
+  # it is actually downloadable (the dev binary-archives above only package it). Same pattern as
+  # the stable primary-release, on branch push instead of a tag. The `main` matcher already
+  # resolves to ^(main|dev-go-port)$, so this covers the Go-port branch too.
+  - id: dwiz-desktop-dev-release
+    kind: release
+    type: prerelease
+    archives: dwiz-desktop-dev-latest
+    tag: "dev-{sha:8}"
+    aliases: ["latest-dev"]
+    retention:
+      keep_last: 6
+      protect: ["latest-dev"]
+    when: { branches: [main], events: [push, manual] }
+
   # ── Stable release — tagged versions ────────────────────────────────────────
   - id: dwiz-desktop-archive
     kind: binary-archive
