@@ -1,5 +1,9 @@
 # ![VirtualDisplayWizard](https://gitlab.prplanit.com/uploads/-/system/project/avatar/42/app.png?width=24) VirtualDisplayWizard
 
+<!-- sf:badges:start --><!-- sf:badges:end -->
+
+<!-- sf:project:start --><!-- sf:project:end -->
+
 ## Prereqs
 - Node 20+ with Corepack (pnpm)
 - Go 1.22+ (optional)

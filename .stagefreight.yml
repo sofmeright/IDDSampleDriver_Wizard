@@ -3,64 +3,32 @@ version: 1
 ci:
   image: docker.cr.pcfae.com/prplanit/stagefreight:latest-dev
 
+git:
+  branches:
+    main: "^(main|dev-go-port)$"
+  tags:
+    stable:     { pattern: "^v?\\d+\\.\\d+\\.\\d+$" }
+    prerelease: { pattern: "^v?\\d+\\.\\d+\\.\\d+-.+" }
+  versioning:
+    branch_builds:
+      default: { base_from: [stable], format: "{base}-dev+{sha}" }
+    no_lineage:
+      # dev-go-port has no version tags yet — bootstrap a dev version instead of
+      # failing (mode: error). Switch to real versions by tagging vX.Y.Z.
+      mode: explicit
+      version: "0.0.0-dev+{sha}"
+
 vars:
   org: prplanit
   github_org: PrPlanIT
   gitlab_group: PrPlanIT
   repo: DisplayWizard
-
-matchers:
-  branches:
-    main: "^(main|dev-go-port)$"
-
-versioning:
-  tag_sources:
-    - id: stable
-      pattern: "^v?\\d+\\.\\d+\\.\\d+$"
-    - id: prerelease
-      pattern: "^v?\\d+\\.\\d+\\.\\d+-.+"
-  branch_builds:
-    - id: default
-      base_from: [stable]
-      format: "{base}-dev+{sha}"
-  no_lineage:
-    # dev-go-port has no version tags yet — bootstrap a dev version instead of
-    # failing (mode: error). Switch to real versions by tagging vX.Y.Z.
-    mode: explicit
-    version: "0.0.0-dev+{sha}"
-
-forges:
-  - id: gitlab
-    provider: gitlab
-    url: "https://gitlab.prplanit.com"
-    credentials: GITLAB
-
-  - id: github
-    provider: github
-    url: "https://github.com"
-    credentials: GITHUB
-
-repos:
-  - id: primary
-    forge: gitlab
-    project: "{var:gitlab_group}/{var:repo}"
-    roles: [primary]
-    branches:
-      default: dev-go-port
-    worktree: "."
-
-  - id: github-mirror
-    forge: github
-    project: "{var:github_org}/{var:repo}"
-    roles: [mirror, publish-origin]
-    sync:
-      git: true
-      releases: true
+  github_repo: DisplayWizard
 
 builds:
-  # Pure-Go, cross-compiled to Windows from the Linux CI (CGO off). Version info
-  # is injected via -ldflags from the resolved version/sha/date.
-  - id: dwiz
+  # Pure-Go, cross-compiled to Windows from the Linux CI (CGO off). Version info is
+  # injected via -ldflags from the resolved version/sha/date.
+  dwiz:
     kind: binary
     builder: go
     from: ./cmd/dwiz
@@ -73,13 +41,13 @@ builds:
     env:
       CGO_ENABLED: "0"
 
-  # The shipped product: the Electron Windows installer. `builder: node` runs the
-  # build INSIDE the electron-builder wine image (repo mounted), so electron-builder
-  # cross-builds the Windows .exe from the Linux CI. depends_on: dwiz → the Go binary
-  # is built first; the command stages it into ui/desktop/bin/ and builds the web
-  # renderer (pnpm -r, a pnpm workspace) before electron-builder packs. Output is the
-  # portable installer glob under ui/desktop/release/.
-  - id: dwiz-desktop
+  # The shipped product: the Electron Windows installer. `builder: node` runs the build
+  # INSIDE the electron-builder wine image (repo mounted), so electron-builder cross-builds
+  # the Windows .exe from the Linux CI. depends_on: dwiz → the Go binary is built first;
+  # the command stages it into ui/desktop/bin/ and builds the web renderer (pnpm -r, a
+  # pnpm workspace) before electron-builder packs. Output is the portable installer glob
+  # under ui/desktop/release/.
+  dwiz-desktop:
     kind: binary
     builder: node
     from: .
@@ -96,13 +64,41 @@ builds:
       cp .stagefreight/dist/windows-amd64/dwiz.exe ui/desktop/bin/dwiz.exe &&
       pnpm -C ui/desktop run pack
 
-targets:
-  # We publish ONLY the Electron installer — the actual Windows product. The bare
-  # dwiz Go binary is an INGREDIENT bundled inside it (built above via dwiz-desktop's
-  # depends_on), never published on its own: it has no Windows UI.
+forges:
+  gitlab:
+    provider: gitlab
+    url: "https://gitlab.prplanit.com"
+    credentials: GITLAB
+
+  github:
+    provider: github
+    url: "https://github.com"
+    credentials: GITHUB
+
+repos:
+  primary:
+    forge: gitlab
+    project: "{var:gitlab_group}/{var:repo}"
+    roles: [primary]
+    branches:
+      default: dev-go-port
+    worktree: "."
+
+  github-mirror:
+    forge: github
+    project: "{var:github_org}/{var:github_repo}"
+    roles: [mirror, publish-origin]
+    sync:
+      git: true
+      releases: true
+
+publish:
+  # We publish ONLY the Electron installer — the actual Windows product. The bare dwiz Go
+  # binary is an INGREDIENT bundled inside it (built above via dwiz-desktop's depends_on),
+  # never published on its own: it has no Windows UI.
   #
-  # ── Dev channel — every push / manual run on the default branch ──────────────
-  - id: dwiz-desktop-dev-archive
+  # ── Dev channel — every push / manual run on the default branch ──
+  dwiz-desktop-dev-archive:
     kind: binary-archive
     build: dwiz-desktop
     format: auto
@@ -113,7 +109,7 @@ targets:
       keep_last: 6
       protect: ["VDisplay-Wizard-latest-dev-*", "VDisplay-Wizard-latest-*"]
 
-  - id: dwiz-desktop-dev-latest
+  dwiz-desktop-dev-latest:
     kind: binary-archive
     build: dwiz-desktop
     format: auto
@@ -121,13 +117,13 @@ targets:
     checksums: true
     when: { branches: [main], events: [push, manual] }
 
-  # Dev release channel: publish the dev installer as a rolling latest-dev GitLab prerelease so
-  # it is actually downloadable (the dev binary-archives above only package it). Same pattern as
-  # the stable primary-release, on branch push instead of a tag. The `main` matcher already
-  # resolves to ^(main|dev-go-port)$, so this covers the Go-port branch too.
-  - id: dwiz-desktop-dev-release
+  # Dev release channel: publish the dev installer as a rolling latest-dev GitLab prerelease
+  # so it is actually downloadable. Authored on the primary forge (GitLab); mirrored to
+  # GitHub via repos.github-mirror.sync.releases.
+  dwiz-desktop-dev-release:
     kind: release
     type: prerelease
+    repos: [primary]
     archives: dwiz-desktop-dev-latest
     tag: "dev-{sha:8}"
     aliases: ["latest-dev"]
@@ -136,8 +132,8 @@ targets:
       protect: ["latest-dev"]
     when: { branches: [main], events: [push, manual] }
 
-  # ── Stable release — tagged versions ────────────────────────────────────────
-  - id: dwiz-desktop-archive
+  # ── Stable release — tagged versions ──
+  dwiz-desktop-archive:
     kind: binary-archive
     build: dwiz-desktop
     format: auto
@@ -146,17 +142,19 @@ targets:
     checksums: true
     when: { git_tags: [stable], events: [tag] }
 
-  - id: primary-release
+  # Primary release: authored on GitLab, mirrored to GitHub via sync.releases.
+  primary-release:
     kind: release
+    type: latest
+    repos: [primary]
     archives: dwiz-desktop-archive
     aliases: ["v{version}", "latest"]
     when: { git_tags: [stable], events: [tag] }
 
-  - id: github-release
-    kind: release
-    mirror: github-mirror
-    sync_release: true
-    when: { git_tags: [stable], events: [tag] }
+commit:
+  default_type: docs
+  conventional: true
+  backend: git
 
 dependency:
   enabled: true
@@ -172,13 +170,94 @@ dependency:
 
 lint:
   level: full
+  exclude:
+    - "*.png"
+    - "*.svg"
+    - "*.ico"
   modules:
     freshness:
-      options:
-        severity:
-          # Major-version-behind is advisory, not build-blocking. CVE-affected deps
-          # still escalate to critical via severity_override (default on).
-          major: 1
+      enabled: true
+      cache_ttl: 300
+      sources:
+        go_modules: true
+      vulnerability:
+        enabled: true
+    tabs:
+      enabled: true
+    secrets:
+      enabled: true
+      exclude:
+        - "go.sum"
+    conflicts:
+      enabled: true
+    filesize:
+      enabled: true
+    unicode:
+      enabled: true
+      detect_bidi: true
+      detect_zero_width: true
+      detect_control_ascii: true
 
 release:
   enabled: true
+  security_summary: true
+  registry_links: true
+
+security:
+  enabled: true
+  output: ".stagefreight/security"
+  sbom: true
+  release_detail: full
+
+toolchains:
+  trivy: "0.69.3"
+  syft: "1.42.3"
+  grype: "0.110.0"
+  osv-scanner: "2.3.5"
+  cosign: "3.0.6"
+
+# stencils: define each renderable once (id → stencil def). Inline defs render a
+# badge (default) or a shield (render: shield); named producers render via type.
+# No docker/pulls stencils — DisplayWizard ships a Windows installer, not an image.
+stencils:
+  # ── generated badges ──
+  build:   { label: build,   message: "{env:BUILD_STATUS}", color: auto, font: monofur, link: "https://gitlab.prplanit.com/{var:gitlab_group}/{var:repo}/-/pipelines" }
+  license: { label: license, message: "AGPL-3.0-only", color: "#310937", font: monofur, link: LICENSE }
+  release: { label: release, message: "v{base}", color: "#74ecbe", font: dejavu-sans, font_size: 11, link: "https://github.com/{var:github_org}/{var:github_repo}/releases" }
+  updated: { label: updated, message: "{env:BUILD_DATE}", color: "#236144", font: dejavu-sans, font_size: 11 }
+
+  # ── inline shields ──
+  donate:  { render: shield, message: donate,  color: "#FF5E5B", logo: ko-fi,          logo_color: white, link: "https://ko-fi.com/T6T41IT163" }
+  sponsor: { render: shield, message: sponsor, color: "#EA4AAA", logo: githubsponsors, logo_color: white, link: "https://github.com/sponsors/{var:github_org}" }
+  github:  { render: shield, label: GitHub, message: source, color: "#181717", logo: github, link: "https://github.com/{var:github_org}/{var:github_repo}" }
+  gitlab:  { render: shield, label: GitLab, message: source, color: "#FC6D26", logo: gitlab, link: "https://gitlab.prplanit.com/{var:gitlab_group}/{var:repo}" }
+
+  # ── named producers (repo resolves from repos: publish-origin) ──
+  go-report:    { type: goreportcard }
+  last-commit:  { type: github-last-commit }
+  issues-open:  { type: github-issues-open }
+  prs-open:     { type: github-prs-open }
+  contributors: { type: github-contributors }
+
+scribe:
+  files:
+    readme.badges:
+      file: "README.md"
+      between: ["<!-- sf:badges:start -->", "<!-- sf:badges:end -->"]
+      inline: true
+      items: [build, license, release, updated, donate, sponsor]
+
+    readme.project:
+      file: "README.md"
+      between: ["<!-- sf:project:start -->", "<!-- sf:project:end -->"]
+      inline: true
+      items: [github, gitlab, go-report, last-commit, issues-open, prs-open, contributors]
+
+  commit:
+    type: docs
+    message: "refresh generated docs and badges"
+    add:
+      - "README.md"
+      - ".stagefreight/scribe"
+    push: true
+    skip_ci: true

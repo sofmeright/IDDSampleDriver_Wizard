@@ -3,6 +3,6 @@
 # durable set carved out below (allowlist — new outputs stay ignored).
 /*
 !/.gitignore
-!/badges/
+!/scribe/
 !/preset-cache/
 !/toolchains.lock
