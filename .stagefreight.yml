@@ -210,11 +210,14 @@ security:
   release_detail: full
 
 toolchains:
-  trivy: "0.69.3"
-  syft: "1.42.3"
-  grype: "0.110.0"
-  osv-scanner: "2.3.5"
-  cosign: "3.0.6"
+  want:
+    trivy: "0.69.3"
+    syft: "1.42.3"
+    grype: "0.110.0"
+    osv-scanner: "2.3.5"
+    cosign: "3.0.6"
+  retention:
+    keep_last: 2
 
 # stencils: define each renderable once (id → stencil def). Inline defs render a
 # badge (default) or a shield (render: shield); named producers render via type.
